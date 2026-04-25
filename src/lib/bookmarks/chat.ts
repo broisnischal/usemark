@@ -62,7 +62,7 @@ function formatBookmarkContext(rows: BookmarkRecord[]) {
         `Source ${index + 1}`,
         `url: ${row.url}`,
         `tag: ${row.tag}`,
-        `category: ${row.categoryName}`,
+        `folder: ${row.folderName}`,
         `saved_at: ${toDateLabel(row.createdAt)}`,
       ].join("\n");
     })

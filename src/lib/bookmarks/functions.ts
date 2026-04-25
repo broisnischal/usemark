@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, lte } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { bookmark, bookmarkCategory } from "@/lib/db/schema";
+import { bookmark, bookmarkFolder } from "@/lib/db/schema";
 
 import {
   cosineSimilarity,
@@ -15,20 +15,26 @@ export interface BookmarkRecord {
   id: string;
   url: string;
   tag: string;
-  categoryId: string;
-  categoryName: string;
+  folderId: string;
+  folderName: string;
   embeddingStatus: string;
   createdAt: string;
 }
 
-export interface BookmarkCategoryRecord {
+export interface BookmarkFolderRecord {
   id: string;
   name: string;
+  sourceType: string;
+  syncEnabled: boolean;
+  externalAccountId: string | null;
+  externalResourceId: string | null;
+  lastSyncedAt: string | null;
 }
 
 interface CreateBookmarkInput {
   url: string;
   note?: string;
+  folder?: string;
   category?: string;
 }
 
@@ -76,18 +82,18 @@ function getTagFromUrl(urlValue: string) {
   return host.split(".")[0] ?? "other";
 }
 
-function normalizeCategoryName(value: string | undefined) {
+function normalizeFolderName(value: string | undefined) {
   const normalized = value?.trim().toLowerCase();
   return normalized && normalized.length > 0 ? normalized : "default";
 }
 
-async function ensureCategoryForUser(userId: string, categoryName?: string) {
-  const normalizedName = normalizeCategoryName(categoryName);
+async function ensureFolderForUser(userId: string, folderName?: string) {
+  const normalizedName = normalizeFolderName(folderName);
 
   const existing = await db
     .select()
-    .from(bookmarkCategory)
-    .where(and(eq(bookmarkCategory.userId, userId), eq(bookmarkCategory.name, normalizedName)))
+    .from(bookmarkFolder)
+    .where(and(eq(bookmarkFolder.userId, userId), eq(bookmarkFolder.name, normalizedName)))
     .limit(1)
     .then((rows) => rows[0]);
 
@@ -95,37 +101,55 @@ async function ensureCategoryForUser(userId: string, categoryName?: string) {
     return existing;
   }
 
-  const category = {
+  const folder = {
     id: crypto.randomUUID(),
     userId,
     name: normalizedName,
-  } satisfies typeof bookmarkCategory.$inferInsert;
+    sourceType: "local",
+    syncEnabled: false,
+    externalAccountId: null,
+    externalResourceId: null,
+    lastSyncedAt: null,
+  } satisfies typeof bookmarkFolder.$inferInsert;
 
-  await db.insert(bookmarkCategory).values(category);
-  return category;
+  await db.insert(bookmarkFolder).values(folder);
+  return folder;
 }
 
-export async function listBookmarkCategoriesForUser(userId: string) {
-  await ensureCategoryForUser(userId, "default");
+export async function listBookmarkFoldersForUser(userId: string) {
+  await ensureFolderForUser(userId, "default");
 
   const rows = await db
     .select({
-      id: bookmarkCategory.id,
-      name: bookmarkCategory.name,
+      id: bookmarkFolder.id,
+      name: bookmarkFolder.name,
+      sourceType: bookmarkFolder.sourceType,
+      syncEnabled: bookmarkFolder.syncEnabled,
+      externalAccountId: bookmarkFolder.externalAccountId,
+      externalResourceId: bookmarkFolder.externalResourceId,
+      lastSyncedAt: bookmarkFolder.lastSyncedAt,
     })
-    .from(bookmarkCategory)
-    .where(eq(bookmarkCategory.userId, userId))
-    .orderBy(bookmarkCategory.name);
+    .from(bookmarkFolder)
+    .where(eq(bookmarkFolder.userId, userId))
+    .orderBy(bookmarkFolder.name);
 
-  return rows satisfies BookmarkCategoryRecord[];
+  return rows.map((row) => ({
+    ...row,
+    lastSyncedAt: row.lastSyncedAt?.toISOString() ?? null,
+  })) satisfies BookmarkFolderRecord[];
 }
 
-export async function createBookmarkCategoryForUser(userId: string, categoryName: string) {
-  const category = await ensureCategoryForUser(userId, categoryName);
+export async function createBookmarkFolderForUser(userId: string, folderName: string) {
+  const folder = await ensureFolderForUser(userId, folderName);
   return {
-    id: category.id,
-    name: category.name,
-  } satisfies BookmarkCategoryRecord;
+    id: folder.id,
+    name: folder.name,
+    sourceType: folder.sourceType,
+    syncEnabled: folder.syncEnabled,
+    externalAccountId: folder.externalAccountId,
+    externalResourceId: folder.externalResourceId,
+    lastSyncedAt: folder.lastSyncedAt?.toISOString() ?? null,
+  } satisfies BookmarkFolderRecord;
 }
 
 function parseRelativeDateRange(query: string) {
@@ -167,8 +191,8 @@ function toBookmarkRecord(row: {
   id: string;
   url: string;
   tag: string;
-  categoryId: string;
-  categoryName: string;
+  folderId: string;
+  folderName: string;
   embeddingStatus: string;
   createdAt: Date;
 }): BookmarkRecord {
@@ -176,20 +200,20 @@ function toBookmarkRecord(row: {
     id: row.id,
     url: row.url,
     tag: row.tag,
-    categoryId: row.categoryId,
-    categoryName: row.categoryName,
+    folderId: row.folderId,
+    folderName: row.folderName,
     embeddingStatus: row.embeddingStatus,
     createdAt: row.createdAt.toISOString(),
   };
 }
 
 export async function listBookmarksForUser(userId: string) {
-  await ensureCategoryForUser(userId, "default");
+  await ensureFolderForUser(userId, "default");
 
   const rows = await db
     .select()
     .from(bookmark)
-    .innerJoin(bookmarkCategory, eq(bookmark.categoryId, bookmarkCategory.id))
+    .innerJoin(bookmarkFolder, eq(bookmark.folderId, bookmarkFolder.id))
     .where(eq(bookmark.userId, userId))
     .orderBy(desc(bookmark.createdAt));
 
@@ -198,8 +222,8 @@ export async function listBookmarksForUser(userId: string) {
       id: row.bookmark.id,
       url: row.bookmark.url,
       tag: row.bookmark.tag,
-      categoryId: row.bookmark.categoryId,
-      categoryName: row.bookmark_category.name,
+      folderId: row.bookmark.folderId,
+      folderName: row.bookmark_folder.name,
       embeddingStatus: row.bookmark.embeddingStatus,
       createdAt: row.bookmark.createdAt,
     }),
@@ -214,7 +238,7 @@ export async function createBookmarkForUser(userId: string, data: CreateBookmark
     throw new Error("URL is required.");
   }
 
-  const category = await ensureCategoryForUser(userId, data.category);
+  const folder = await ensureFolderForUser(userId, data.folder ?? data.category);
   const bookmarkId = crypto.randomUUID();
 
   const record = {
@@ -223,7 +247,7 @@ export async function createBookmarkForUser(userId: string, data: CreateBookmark
     url,
     note,
     tag: getTagFromUrl(url),
-    categoryId: category.id,
+    folderId: folder.id,
     embeddingStatus: "pending",
   } satisfies typeof bookmark.$inferInsert;
 
@@ -236,7 +260,7 @@ export async function processBookmarkEmbedding(bookmarkId: string) {
   const row = await db
     .select()
     .from(bookmark)
-    .innerJoin(bookmarkCategory, eq(bookmark.categoryId, bookmarkCategory.id))
+    .innerJoin(bookmarkFolder, eq(bookmark.folderId, bookmarkFolder.id))
     .where(eq(bookmark.id, bookmarkId))
     .limit(1)
     .then((rows) => rows[0]);
@@ -262,7 +286,7 @@ export async function processBookmarkEmbedding(bookmarkId: string) {
     const baseEmbeddingText = toEmbeddingText({
       url: row.bookmark.url,
       note: row.bookmark.note,
-      category: row.bookmark_category.name,
+      folder: row.bookmark_folder.name,
       tag: row.bookmark.tag,
     });
     const embeddingText = pageText
@@ -309,7 +333,7 @@ export async function searchBookmarksForUser(userId: string, data: SearchBookmar
   const rows = await db
     .select()
     .from(bookmark)
-    .innerJoin(bookmarkCategory, eq(bookmark.categoryId, bookmarkCategory.id))
+    .innerJoin(bookmarkFolder, eq(bookmark.folderId, bookmarkFolder.id))
     .where(whereClause)
     .orderBy(desc(bookmark.createdAt));
 
@@ -339,14 +363,11 @@ export async function searchBookmarksForUser(userId: string, data: SearchBookmar
       const semanticScore =
         rowEmbedding.length > 0 ? cosineSimilarity(queryEmbedding, rowEmbedding) : 0;
 
-      console.log(rowEmbedding);
-      console.log(semanticScore);
-
       const searchableText = [
         row.bookmark.url,
         row.bookmark.note ?? "",
         row.bookmark.tag,
-        row.bookmark_category.name,
+        row.bookmark_folder.name,
       ]
         .join(" ")
         .toLowerCase();
@@ -359,11 +380,11 @@ export async function searchBookmarksForUser(userId: string, data: SearchBookmar
       const tokenOverlapRatio = queryTokens.length > 0 ? tokenOverlapCount / queryTokens.length : 0;
       const tokenOverlapBoost = tokenOverlapRatio * 0.35;
 
-      const hostOrCategoryMatchBoost = queryTokens.some(
+      const hostOrFolderMatchBoost = queryTokens.some(
         (token) =>
           rowHost.includes(token) ||
           row.bookmark.tag === token ||
-          row.bookmark_category.name === token,
+          row.bookmark_folder.name === token,
       )
         ? 0.35
         : 0;
@@ -378,13 +399,13 @@ export async function searchBookmarksForUser(userId: string, data: SearchBookmar
         semanticScore * 0.65 +
         exactPhraseBoost +
         tokenOverlapBoost +
-        hostOrCategoryMatchBoost +
+        hostOrFolderMatchBoost +
         tagStartsWithQueryTokenBoost;
 
       const hasAnyLexicalSignal =
         exactPhraseBoost > 0 ||
         tokenOverlapCount > 0 ||
-        hostOrCategoryMatchBoost > 0 ||
+        hostOrFolderMatchBoost > 0 ||
         tagStartsWithQueryTokenBoost > 0;
 
       // For short, intent-like queries ("google searches"), heavily favor lexical/domain matches.
@@ -398,8 +419,8 @@ export async function searchBookmarksForUser(userId: string, data: SearchBookmar
         id: item.row.bookmark.id,
         url: item.row.bookmark.url,
         tag: item.row.bookmark.tag,
-        categoryId: item.row.bookmark.categoryId,
-        categoryName: item.row.bookmark_category.name,
+        folderId: item.row.bookmark.folderId,
+        folderName: item.row.bookmark_folder.name,
         embeddingStatus: item.row.bookmark.embeddingStatus,
         createdAt: item.row.bookmark.createdAt,
       }),

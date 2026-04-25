@@ -4,7 +4,9 @@ import { CornerDownLeftIcon, PlusIcon } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Input } from "@/components/ui/input";
+import { Kbd } from "@/components/ui/kbd";
 import type { BookmarkRecord } from "@/lib/bookmarks/functions";
 import {
   bookmarkSearchQueryOptions,
@@ -17,6 +19,49 @@ export const Route = createFileRoute("/_auth/app/")({
 });
 
 const BOOKMARK_INPUT_DEBOUNCE_MS = 300;
+
+function getHostFromUrlValue(urlValue: string) {
+  try {
+    return new URL(urlValue).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function getDisplayLabelFromUrlValue(urlValue: string) {
+  try {
+    const parsed = new URL(urlValue);
+    const lastPathSegment = parsed.pathname.split("/").filter(Boolean).at(-1);
+    if (lastPathSegment) {
+      return decodeURIComponent(lastPathSegment).replace(/[-_]+/g, " ");
+    }
+    return parsed.hostname.replace(/^www\./, "");
+  } catch {
+    return urlValue;
+  }
+}
+
+function bookmarkMatchesSearch(row: BookmarkRecord, query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return true;
+  }
+
+  const searchableText = [
+    row.url,
+    row.tag,
+    row.folderName,
+    row.embeddingStatus,
+    getHostFromUrlValue(row.url),
+    getDisplayLabelFromUrlValue(row.url),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  return normalizedQuery
+    .split(/\s+/g)
+    .every((token) => token.length === 0 || searchableText.includes(token));
+}
 
 function useDebouncedValue<TValue>(value: TValue, delayMs: number) {
   const [debouncedValue, setDebouncedValue] = React.useState(value);
@@ -54,28 +99,15 @@ function AppIndex() {
   }, []);
 
   const getHostFromUrl = React.useCallback((urlValue: string) => {
-    try {
-      return new URL(urlValue).hostname.replace(/^www\./, "");
-    } catch {
-      return "";
-    }
+    return getHostFromUrlValue(urlValue);
   }, []);
 
   const getDisplayLabelFromUrl = React.useCallback((urlValue: string) => {
-    try {
-      const parsed = new URL(urlValue);
-      const lastPathSegment = parsed.pathname.split("/").filter(Boolean).at(-1);
-      if (lastPathSegment) {
-        return decodeURIComponent(lastPathSegment).replace(/[-_]+/g, " ");
-      }
-      return parsed.hostname.replace(/^www\./, "");
-    } catch {
-      return urlValue;
-    }
+    return getDisplayLabelFromUrlValue(urlValue);
   }, []);
 
   const createBookmarkMutation = useMutation({
-    mutationFn: async (payload: { url: string; category: string }) => {
+    mutationFn: async (payload: { url: string; folder: string }) => {
       const response = await fetch("/api/bookmarks", {
         method: "POST",
         headers: {
@@ -102,8 +134,8 @@ function AppIndex() {
         id: optimisticId,
         url: payload.url,
         tag: getTagFromUrl(payload.url),
-        categoryId: optimisticId,
-        categoryName: payload.category || "default",
+        folderId: optimisticId,
+        folderName: payload.folder || "default",
         embeddingStatus: "pending",
         createdAt: new Date().toISOString(),
       };
@@ -112,16 +144,20 @@ function AppIndex() {
         optimisticRow,
         ...(currentRows ?? []),
       ]);
-      queryClient.setQueriesData(
-        { queryKey: ["bookmarks", "search"] },
-        (currentRows: BookmarkRecord[] | undefined) => {
+      queryClient
+        .getQueriesData<BookmarkRecord[]>({ queryKey: ["bookmarks", "search"] })
+        .forEach(([queryKey, currentRows]) => {
           if (!currentRows) {
-            return currentRows;
+            return;
           }
 
-          return [optimisticRow, ...currentRows];
-        },
-      );
+          const cachedSearch = typeof queryKey[2] === "string" ? queryKey[2] : "";
+          if (!bookmarkMatchesSearch(optimisticRow, cachedSearch)) {
+            return;
+          }
+
+          queryClient.setQueryData(queryKey, [optimisticRow, ...currentRows]);
+        });
 
       return { optimisticId };
     },
@@ -177,7 +213,7 @@ function AppIndex() {
       return;
     }
     setInputValue("");
-    createBookmarkMutation.mutate({ url: nextUrl, category: "default" });
+    createBookmarkMutation.mutate({ url: nextUrl, folder: "default" });
   };
 
   const fetchedRows: BookmarkRecord[] = search.trim()
@@ -216,13 +252,18 @@ function AppIndex() {
             ? Array.from({ length: 6 }).map((_, index) => (
                 <li
                   key={`skeleton-${index}`}
-                  className="grid grid-cols-[minmax(0,1fr)_86px] items-center gap-3 py-3"
+                  className="grid grid-cols-[minmax(0,1fr)_86px] items-start gap-3 py-3"
                 >
-                  <div>
-                    <div className="h-4 w-3/4 animate-pulse rounded-md bg-muted" />
-                    <div className="mt-2 h-3 w-1/3 animate-pulse rounded-md bg-muted/70" />
+                  <div className="flex min-w-0 items-start gap-2.5">
+                    <div className="mt-0.5 size-4 shrink-0 animate-pulse rounded-sm bg-muted" />
+                    <div className="min-w-0 flex-1">
+                      <div className="h-4 w-3/5 animate-pulse rounded-md bg-muted" />
+                      <div className="mt-1.5 flex items-center gap-1.5">
+                        <div className="h-3 w-24 animate-pulse rounded-md bg-muted/70" />
+                      </div>
+                    </div>
                   </div>
-                  <div className="ml-auto h-3 w-10 animate-pulse rounded-md bg-muted/70" />
+                  <div className="ml-auto h-3 w-11 animate-pulse rounded-md bg-muted/70" />
                 </li>
               ))
             : null}
@@ -238,14 +279,18 @@ function AppIndex() {
               return (
                 <li
                   key={item.id}
-                  className="grid grid-cols-[minmax(0,1fr)_86px] items-center gap-3 py-3"
+                  className="grid grid-cols-[minmax(0,1fr)_86px] items-start gap-3 py-3"
                 >
-                  <div className="flex min-w-0 items-center gap-2.5">
+
+<ContextMenu>
+  <ContextMenuTrigger>
+  <div>
+  <div className="flex min-w-0 items-start gap-2.5">
                     {host ? (
                       <img
                         src={primaryFaviconUrl}
                         alt=""
-                        className="size-4 shrink-0 rounded-sm"
+                        className="mt-0.5 size-4 shrink-0 rounded-sm"
                         loading="lazy"
                         referrerPolicy="no-referrer"
                         onError={(event) => {
@@ -260,7 +305,7 @@ function AppIndex() {
                         }}
                       />
                     ) : (
-                      <span className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm bg-muted text-[10px] text-muted-foreground">
+                      <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm bg-muted text-[10px] text-muted-foreground">
                         {item.tag.slice(0, 1).toUpperCase()}
                       </span>
                     )}
@@ -273,19 +318,35 @@ function AppIndex() {
                       >
                         {getDisplayLabelFromUrl(item.url)}
                       </a>
-                      <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                        {host || item.tag}
-                        {item.categoryName !== "default" ? ` · ${item.categoryName}` : ""}
-                        {item.embeddingStatus !== "ready" ? ` · ${item.embeddingStatus}` : ""}
-                      </p>
+                      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
+                        <span className="truncate text-xs text-muted-foreground">
+                          {host || item.tag}
+                        </span>
+                        {item.folderName !== "default" ? <Kbd>{item.folderName}</Kbd> : null}
+                        {item.embeddingStatus !== "ready" ? (
+                          <Kbd className="uppercase">{item.embeddingStatus}</Kbd>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
-                  <p className="text-right text-sm text-muted-foreground">
+                  <p className="pt-0.5 text-right text-xs text-muted-foreground">
                     {new Date(item.createdAt).toLocaleDateString(undefined, {
                       month: "short",
                       day: "numeric",
                     })}
                   </p>
+  </div>
+  </ContextMenuTrigger>
+  <ContextMenuContent>
+  <ContextMenuItem>Copy</ContextMenuItem>
+
+    <ContextMenuItem>Delete</ContextMenuItem>
+    <ContextMenuItem>Refetch</ContextMenuItem> 
+    {/* refetch metadata */}
+    <ContextMenuItem>Select</ContextMenuItem>
+  </ContextMenuContent>
+</ContextMenu>
+                 
                 </li>
               );
             })}

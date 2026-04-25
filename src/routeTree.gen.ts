@@ -15,7 +15,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiUploadthingRouteImport } from './routes/api/uploadthing'
 import { Route as ApiInngestRouteImport } from './routes/api/inngest'
 import { Route as ApiBookmarksRouteImport } from './routes/api/bookmarks'
-import { Route as ApiBookmarkCategoriesRouteImport } from './routes/api/bookmark-categories'
+import { Route as ApiBookmarkFoldersRouteImport } from './routes/api/bookmark-folders'
 import { Route as GuestSignupRouteImport } from './routes/_guest/signup'
 import { Route as GuestLoginRouteImport } from './routes/_guest/login'
 import { Route as AuthAppRouteRouteImport } from './routes/_auth/app/route'
@@ -52,9 +52,9 @@ const ApiBookmarksRoute = ApiBookmarksRouteImport.update({
   path: '/api/bookmarks',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiBookmarkCategoriesRoute = ApiBookmarkCategoriesRouteImport.update({
-  id: '/api/bookmark-categories',
-  path: '/api/bookmark-categories',
+const ApiBookmarkFoldersRoute = ApiBookmarkFoldersRouteImport.update({
+  id: '/api/bookmark-folders',
+  path: '/api/bookmark-folders',
   getParentRoute: () => rootRouteImport,
 } as any)
 const GuestSignupRoute = GuestSignupRouteImport.update({
@@ -98,7 +98,7 @@ export interface FileRoutesByFullPath {
   '/app': typeof AuthAppRouteRouteWithChildren
   '/login': typeof GuestLoginRoute
   '/signup': typeof GuestSignupRoute
-  '/api/bookmark-categories': typeof ApiBookmarkCategoriesRoute
+  '/api/bookmark-folders': typeof ApiBookmarkFoldersRoute
   '/api/bookmarks': typeof ApiBookmarksRouteWithChildren
   '/api/inngest': typeof ApiInngestRoute
   '/api/uploadthing': typeof ApiUploadthingRoute
@@ -111,7 +111,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof GuestLoginRoute
   '/signup': typeof GuestSignupRoute
-  '/api/bookmark-categories': typeof ApiBookmarkCategoriesRoute
+  '/api/bookmark-folders': typeof ApiBookmarkFoldersRoute
   '/api/bookmarks': typeof ApiBookmarksRouteWithChildren
   '/api/inngest': typeof ApiInngestRoute
   '/api/uploadthing': typeof ApiUploadthingRoute
@@ -128,7 +128,7 @@ export interface FileRoutesById {
   '/_auth/app': typeof AuthAppRouteRouteWithChildren
   '/_guest/login': typeof GuestLoginRoute
   '/_guest/signup': typeof GuestSignupRoute
-  '/api/bookmark-categories': typeof ApiBookmarkCategoriesRoute
+  '/api/bookmark-folders': typeof ApiBookmarkFoldersRoute
   '/api/bookmarks': typeof ApiBookmarksRouteWithChildren
   '/api/inngest': typeof ApiInngestRoute
   '/api/uploadthing': typeof ApiUploadthingRoute
@@ -144,7 +144,7 @@ export interface FileRouteTypes {
     | '/app'
     | '/login'
     | '/signup'
-    | '/api/bookmark-categories'
+    | '/api/bookmark-folders'
     | '/api/bookmarks'
     | '/api/inngest'
     | '/api/uploadthing'
@@ -157,7 +157,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/signup'
-    | '/api/bookmark-categories'
+    | '/api/bookmark-folders'
     | '/api/bookmarks'
     | '/api/inngest'
     | '/api/uploadthing'
@@ -173,7 +173,7 @@ export interface FileRouteTypes {
     | '/_auth/app'
     | '/_guest/login'
     | '/_guest/signup'
-    | '/api/bookmark-categories'
+    | '/api/bookmark-folders'
     | '/api/bookmarks'
     | '/api/inngest'
     | '/api/uploadthing'
@@ -187,7 +187,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRouteRoute: typeof AuthRouteRouteWithChildren
   GuestRouteRoute: typeof GuestRouteRouteWithChildren
-  ApiBookmarkCategoriesRoute: typeof ApiBookmarkCategoriesRoute
+  ApiBookmarkFoldersRoute: typeof ApiBookmarkFoldersRoute
   ApiBookmarksRoute: typeof ApiBookmarksRouteWithChildren
   ApiInngestRoute: typeof ApiInngestRoute
   ApiUploadthingRoute: typeof ApiUploadthingRoute
@@ -238,11 +238,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiBookmarksRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/bookmark-categories': {
-      id: '/api/bookmark-categories'
-      path: '/api/bookmark-categories'
-      fullPath: '/api/bookmark-categories'
-      preLoaderRoute: typeof ApiBookmarkCategoriesRouteImport
+    '/api/bookmark-folders': {
+      id: '/api/bookmark-folders'
+      path: '/api/bookmark-folders'
+      fullPath: '/api/bookmark-folders'
+      preLoaderRoute: typeof ApiBookmarkFoldersRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_guest/signup': {
@@ -353,7 +353,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRouteRoute: AuthRouteRouteWithChildren,
   GuestRouteRoute: GuestRouteRouteWithChildren,
-  ApiBookmarkCategoriesRoute: ApiBookmarkCategoriesRoute,
+  ApiBookmarkFoldersRoute: ApiBookmarkFoldersRoute,
   ApiBookmarksRoute: ApiBookmarksRouteWithChildren,
   ApiInngestRoute: ApiInngestRoute,
   ApiUploadthingRoute: ApiUploadthingRoute,

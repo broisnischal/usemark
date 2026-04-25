@@ -1,9 +1,9 @@
 import { queryOptions } from "@tanstack/react-query";
 
-import type { BookmarkCategoryRecord, BookmarkRecord } from "./functions";
+import type { BookmarkFolderRecord, BookmarkRecord } from "./functions";
 
 export const bookmarksQueryKey = ["bookmarks"] as const;
-export const bookmarkCategoriesQueryKey = ["bookmark-categories"] as const;
+export const bookmarkFoldersQueryKey = ["bookmark-folders"] as const;
 
 async function readJson<T>(response: Response) {
   if (!response.ok) {
@@ -42,14 +42,14 @@ export const bookmarkSearchQueryOptions = (query: string) =>
     enabled: Boolean(query.trim()),
   });
 
-export const bookmarkCategoriesQueryOptions = () =>
+export const bookmarkFoldersQueryOptions = () =>
   queryOptions({
-    queryKey: bookmarkCategoriesQueryKey,
+    queryKey: bookmarkFoldersQueryKey,
     queryFn: async ({ signal }) => {
-      const response = await fetch("/api/bookmark-categories", {
+      const response = await fetch("/api/bookmark-folders", {
         method: "GET",
         signal,
       });
-      return readJson<BookmarkCategoryRecord[]>(response);
+      return readJson<BookmarkFolderRecord[]>(response);
     },
   });

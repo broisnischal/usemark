@@ -18,13 +18,13 @@ export function getEmbeddingModelName() {
 export function toEmbeddingText(input: {
   url: string;
   note?: string | null;
-  category: string;
+  folder: string;
   tag: string;
 }) {
   return [
     `url: ${input.url}`,
     `tag: ${input.tag}`,
-    `category: ${input.category}`,
+    `folder: ${input.folder}`,
     input.note ? `note: ${input.note}` : "",
   ]
     .filter(Boolean)

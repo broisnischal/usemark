@@ -1,12 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { auth } from "@/lib/auth/auth";
-import {
-  createBookmarkCategoryForUser,
-  listBookmarkCategoriesForUser,
-} from "@/lib/bookmarks/functions";
+import { createBookmarkFolderForUser, listBookmarkFoldersForUser } from "@/lib/bookmarks/functions";
 
-export const Route = createFileRoute("/api/bookmark-categories")({
+export const Route = createFileRoute("/api/bookmark-folders")({
   server: {
     handlers: {
       GET: async ({ request }) => {
@@ -19,8 +16,8 @@ export const Route = createFileRoute("/api/bookmark-categories")({
           return Response.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        const categories = await listBookmarkCategoriesForUser(userId);
-        return Response.json(categories);
+        const folders = await listBookmarkFoldersForUser(userId);
+        return Response.json(folders);
       },
       POST: async ({ request }) => {
         const session = await auth.api.getSession({
@@ -35,11 +32,11 @@ export const Route = createFileRoute("/api/bookmark-categories")({
         const payload = (await request.json()) as { name?: string };
         const name = payload.name?.trim() ?? "";
         if (!name) {
-          return Response.json({ error: "Category name is required." }, { status: 400 });
+          return Response.json({ error: "Folder name is required." }, { status: 400 });
         }
 
-        const category = await createBookmarkCategoryForUser(userId, name);
-        return Response.json(category, { status: 201 });
+        const folder = await createBookmarkFolderForUser(userId, name);
+        return Response.json(folder, { status: 201 });
       },
     },
   },

@@ -37,12 +37,13 @@ export const Route = createFileRoute("/api/bookmarks")({
         const payload = (await request.json()) as {
           url?: string;
           note?: string;
+          folder?: string;
           category?: string;
         };
         const created = await createBookmarkForUser(userId, {
           url: payload.url ?? "",
           note: payload.note ?? "",
-          category: payload.category ?? "default",
+          folder: payload.folder ?? payload.category ?? "default",
         });
 
         // Queue background embedding/indexing through Inngest.
