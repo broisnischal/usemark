@@ -33,3 +33,4 @@
 - add feature of hold to delete
 - help and supoert page, proper issue tracking in github, 
 - icon, and branding, better
+- raycast extension 
