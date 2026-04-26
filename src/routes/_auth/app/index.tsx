@@ -1,8 +1,10 @@
+import { SiGithub, SiReddit, SiX } from "@icons-pack/react-simple-icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
+import Fuse from "fuse.js";
 import {
-  ChevronDownIcon,
   CheckSquareIcon,
+  ChevronDownIcon,
   ClipboardIcon,
   CornerDownLeftIcon,
   ExternalLinkIcon,
@@ -17,12 +19,11 @@ import {
   RssIcon,
   SearchIcon,
   SparklesIcon,
-  Trash2Icon,
 } from "lucide-react";
-import { SiGithub, SiReddit, SiX } from "@icons-pack/react-simple-icons";
 import * as React from "react";
 import { toast } from "sonner";
 
+import { HoldToDelete } from "@/components/hold-to-delete";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -43,6 +44,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -71,9 +75,58 @@ export const Route = createFileRoute("/_auth/app/")({
 
 const BOOKMARK_INPUT_DEBOUNCE_MS = 300;
 const ROW_PAGE_SIZE = 40;
+const VIRTUAL_ROW_ESTIMATE_PX = 45;
+const VIRTUAL_ROW_OVERSCAN = 10;
+const SEARCH_STATE_STORAGE_KEY = "usemarks.search";
 
-type BookmarkSearchMode = "semantic" | "exact";
+type BookmarkSearchMode = "semantic" | "fuzzy" | "exact";
 type GitHubResourceType = "all" | "issues" | "pulls" | "releases";
+
+function isBookmarkSearchMode(value: unknown): value is BookmarkSearchMode {
+  return value === "semantic" || value === "fuzzy" || value === "exact";
+}
+
+function compareBookmarkFolders(first: BookmarkFolderRecord, second: BookmarkFolderRecord) {
+  if (first.name === "default" && second.name !== "default") {
+    return -1;
+  }
+  if (second.name === "default" && first.name !== "default") {
+    return 1;
+  }
+  if (first.isPinned !== second.isPinned) {
+    return first.isPinned ? -1 : 1;
+  }
+  return first.name.localeCompare(second.name, undefined, { sensitivity: "base" });
+}
+
+function readStoredSearchState() {
+  if (typeof window === "undefined") {
+    return { inputValue: "", searchMode: "semantic" as BookmarkSearchMode };
+  }
+
+  try {
+    const rawSearchState = window.localStorage.getItem(SEARCH_STATE_STORAGE_KEY);
+    if (!rawSearchState) {
+      return { inputValue: "", searchMode: "semantic" as BookmarkSearchMode };
+    }
+
+    const parsedSearchState = JSON.parse(rawSearchState) as {
+      inputValue?: unknown;
+      searchMode?: unknown;
+    };
+
+    return {
+      inputValue:
+        typeof parsedSearchState.inputValue === "string" ? parsedSearchState.inputValue : "",
+      searchMode: isBookmarkSearchMode(parsedSearchState.searchMode)
+        ? parsedSearchState.searchMode
+        : "semantic",
+    };
+  } catch {
+    window.localStorage.removeItem(SEARCH_STATE_STORAGE_KEY);
+    return { inputValue: "", searchMode: "semantic" as BookmarkSearchMode };
+  }
+}
 
 const LIVE_FOLDER_OPTIONS: Array<{
   sourceType: BookmarkFolderSourceType;
@@ -147,7 +200,12 @@ function normalizeGitHubResourceTypeInput(value: string | undefined): GitHubReso
   if (normalized === "issue" || normalized === "issues") {
     return "issues";
   }
-  if (normalized === "pr" || normalized === "prs" || normalized === "pull" || normalized === "pulls") {
+  if (
+    normalized === "pr" ||
+    normalized === "prs" ||
+    normalized === "pull" ||
+    normalized === "pulls"
+  ) {
     return "pulls";
   }
   if (normalized === "release" || normalized === "releases") {
@@ -196,8 +254,133 @@ function getDisplayLabelFromUrlValue(urlValue: string) {
   }
 }
 
+function getRedditSubredditFromUrl(urlValue: string) {
+  try {
+    const parsed = new URL(urlValue);
+    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+    if (host !== "reddit.com" && host !== "old.reddit.com") {
+      return "";
+    }
+
+    const [, firstSegment, subreddit] = parsed.pathname.split("/");
+    return firstSegment?.toLowerCase() === "r" && subreddit
+      ? `${decodeURIComponent(subreddit)}`
+      : "";
+  } catch {
+    return "";
+  }
+}
+
+interface AdvancedSearchQuery {
+  text: string;
+  filters: {
+    host: string[];
+    path: string[];
+    folder: string[];
+    tag: string[];
+    type: BookmarkContentType[];
+    subreddit: string[];
+  };
+}
+
+function cleanSearchFilterValue(value: string) {
+  return value
+    .replace(/^["']|["']$/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function parseAdvancedSearchQuery(query: string): AdvancedSearchQuery {
+  const filters: AdvancedSearchQuery["filters"] = {
+    host: [],
+    path: [],
+    folder: [],
+    tag: [],
+    type: [],
+    subreddit: [],
+  };
+  const textTokens: string[] = [];
+
+  for (const token of query.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []) {
+    const match = token.match(/^([a-z]+):(.+)$/i);
+    if (!match?.[1] || !match[2]) {
+      textTokens.push(token);
+      continue;
+    }
+
+    const key = match[1].toLowerCase();
+    const value = cleanSearchFilterValue(match[2]);
+    if (!value) {
+      continue;
+    }
+
+    if (key === "host" || key === "site" || key === "domain") {
+      filters.host.push(value.replace(/^www\./, ""));
+      continue;
+    }
+    if (key === "path" || key === "urlpath") {
+      filters.path.push(value);
+      continue;
+    }
+    if (key === "folder" || key === "in") {
+      filters.folder.push(value);
+      continue;
+    }
+    if (key === "tag") {
+      filters.tag.push(value);
+      continue;
+    }
+    if (key === "type" && (value === "link" || value === "text")) {
+      filters.type.push(value);
+      continue;
+    }
+    if (key === "subreddit" || key === "sub") {
+      filters.subreddit.push(value.replace(/^r\//, ""));
+      continue;
+    }
+
+    textTokens.push(token);
+  }
+
+  return { text: textTokens.join(" ").trim(), filters };
+}
+
+function getUrlPathFromUrlValue(urlValue: string) {
+  try {
+    const parsed = new URL(urlValue);
+    return decodeURIComponent(`${parsed.pathname}${parsed.search}`).toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function bookmarkMatchesAdvancedFilters(
+  row: BookmarkRecord,
+  filters: AdvancedSearchQuery["filters"],
+) {
+  const host = getHostFromUrlValue(row.url).toLowerCase();
+  const path = getUrlPathFromUrlValue(row.url);
+  const subreddit = getRedditSubredditFromUrl(row.url).replace(/^r\//, "").toLowerCase();
+  const folderName = row.folderName.toLowerCase();
+  const tag = row.tag.toLowerCase();
+
+  return (
+    filters.host.every((value) => host === value || host.endsWith(`.${value}`)) &&
+    filters.path.every((value) => path.includes(value)) &&
+    filters.folder.every((value) => folderName.includes(value)) &&
+    filters.tag.every((value) => tag.includes(value)) &&
+    filters.type.every((value) => row.contentType === value) &&
+    filters.subreddit.every((value) => subreddit.includes(value))
+  );
+}
+
 function bookmarkMatchesSearch(row: BookmarkRecord, query: string) {
-  const normalizedQuery = query.trim().toLowerCase();
+  const advancedQuery = parseAdvancedSearchQuery(query);
+  if (!bookmarkMatchesAdvancedFilters(row, advancedQuery.filters)) {
+    return false;
+  }
+
+  const normalizedQuery = advancedQuery.text.toLowerCase();
   if (!normalizedQuery) {
     return true;
   }
@@ -210,6 +393,7 @@ function bookmarkMatchesSearch(row: BookmarkRecord, query: string) {
     row.embeddingStatus,
     getHostFromUrlValue(row.url),
     getDisplayLabelFromUrlValue(row.url),
+    getRedditSubredditFromUrl(row.url),
   ]
     .join(" ")
     .toLowerCase();
@@ -219,12 +403,38 @@ function bookmarkMatchesSearch(row: BookmarkRecord, query: string) {
     .every((token) => token.length === 0 || searchableText.includes(token));
 }
 
+function toFuzzySearchText(row: BookmarkRecord) {
+  return [
+    row.title ?? "",
+    row.url,
+    row.tag,
+    row.folderName,
+    row.embeddingStatus,
+    getHostFromUrlValue(row.url),
+    getDisplayLabelFromUrlValue(row.url),
+    getRedditSubredditFromUrl(row.url),
+  ].join(" ");
+}
+
 function removeBookmarkRow(rows: BookmarkRecord[] | undefined, bookmarkId: string) {
   if (!rows) {
     return rows;
   }
 
   return rows.filter((row) => row.id !== bookmarkId);
+}
+
+function getBookmarkListFolderKey(queryKey: readonly unknown[]) {
+  return typeof queryKey[2] === "string" ? queryKey[2] : "all";
+}
+
+function bookmarkBelongsInListCache(row: BookmarkRecord, queryKey: readonly unknown[]) {
+  const folderKey = getBookmarkListFolderKey(queryKey);
+  return folderKey === "all" || folderKey === row.folderId;
+}
+
+async function delay(ms: number) {
+  await new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function getFolderSourceLabel(sourceType: BookmarkFolderSourceType) {
@@ -275,12 +485,64 @@ function useDebouncedValue<TValue>(value: TValue, delayMs: number) {
   return debouncedValue;
 }
 
+function useWindowVirtualRange(itemCount: number, scope: string) {
+  const listRef = React.useRef<HTMLUListElement | null>(null);
+  const [range, setRange] = React.useState({ start: 0, end: Math.min(itemCount, ROW_PAGE_SIZE) });
+
+  React.useEffect(() => {
+    const updateRange = () => {
+      const listElement = listRef.current;
+      if (!listElement) {
+        setRange({ start: 0, end: Math.min(itemCount, ROW_PAGE_SIZE) });
+        return;
+      }
+
+      const rect = listElement.getBoundingClientRect();
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+      const start = Math.max(
+        0,
+        Math.floor(-rect.top / VIRTUAL_ROW_ESTIMATE_PX) - VIRTUAL_ROW_OVERSCAN,
+      );
+      const end = Math.min(
+        itemCount,
+        Math.ceil((viewportHeight - rect.top) / VIRTUAL_ROW_ESTIMATE_PX) + VIRTUAL_ROW_OVERSCAN,
+      );
+
+      setRange((currentRange) =>
+        currentRange.start === start && currentRange.end === end ? currentRange : { start, end },
+      );
+    };
+
+    updateRange();
+    window.addEventListener("scroll", updateRange, { passive: true });
+    window.addEventListener("resize", updateRange);
+
+    return () => {
+      window.removeEventListener("scroll", updateRange);
+      window.removeEventListener("resize", updateRange);
+    };
+  }, [itemCount, scope]);
+
+  return [
+    listRef,
+    range.start,
+    range.end,
+    range.start * VIRTUAL_ROW_ESTIMATE_PX,
+    Math.max(0, itemCount - range.end) * VIRTUAL_ROW_ESTIMATE_PX,
+  ] as const;
+}
+
 function AppIndex() {
   const queryClient = useQueryClient();
-  const [inputValue, setInputValue] = React.useState("");
-  const [selectedFolderId, setSelectedFolderId] = React.useState<string | null | undefined>(undefined);
+  const initialSearchState = React.useMemo(() => readStoredSearchState(), []);
+  const [inputValue, setInputValue] = React.useState(initialSearchState.inputValue);
+  const [selectedFolderId, setSelectedFolderId] = React.useState<string | null | undefined>(
+    undefined,
+  );
   const [addFolderId, setAddFolderId] = React.useState<string | null>(null);
-  const [searchMode, setSearchMode] = React.useState<BookmarkSearchMode>("semantic");
+  const [searchMode, setSearchMode] = React.useState<BookmarkSearchMode>(
+    initialSearchState.searchMode,
+  );
   const [isRssFolderDialogOpen, setIsRssFolderDialogOpen] = React.useState(false);
   const [isGitHubFolderDialogOpen, setIsGitHubFolderDialogOpen] = React.useState(false);
   const [isCustomFolderDialogOpen, setIsCustomFolderDialogOpen] = React.useState(false);
@@ -298,22 +560,64 @@ function AppIndex() {
   const debouncedInputValue = useDebouncedValue(inputValue, BOOKMARK_INPUT_DEBOUNCE_MS);
   const search = inputValue.trim() ? debouncedInputValue.trim() : "";
 
-  const bookmarksQuery = useQuery(bookmarksQueryOptions());
+  React.useEffect(() => {
+    window.localStorage.setItem(
+      SEARCH_STATE_STORAGE_KEY,
+      JSON.stringify({ inputValue, searchMode }),
+    );
+  }, [inputValue, searchMode]);
+
   const foldersQuery = useQuery(bookmarkFoldersQueryOptions());
+  const folders = React.useMemo(
+    () => [...(foldersQuery.data ?? [])].sort(compareBookmarkFolders),
+    [foldersQuery.data],
+  );
+  const manualFolders = folders.filter((folder) => folder.sourceType === "local");
+  const pinnedFolder = folders.find((folder) => folder.isPinned) ?? null;
+  const defaultFolder = manualFolders.find((folder) => folder.name === "default") ?? null;
+  const activeFolderId =
+    selectedFolderId === undefined
+      ? (pinnedFolder?.id ?? defaultFolder?.id ?? null)
+      : selectedFolderId;
+  const selectedFolder = folders.find((folder) => folder.id === activeFolderId) ?? null;
+  const isXFolderSelected = selectedFolder?.sourceType === "x";
+  const isGitHubFolderSelected = selectedFolder?.sourceType === "github";
+  const bookmarksQuery = useQuery(
+    bookmarksQueryOptions(
+      activeFolderId,
+      Boolean(foldersQuery.data) && !isXFolderSelected && !isGitHubFolderSelected,
+    ),
+  );
   const searchQuery = useQuery({
     ...bookmarkSearchQueryOptions(search),
     enabled: searchMode === "semantic" && Boolean(search.trim()),
     placeholderData: (previousData) => previousData,
   });
-  const xBookmarksQuery = useQuery(
-    xBookmarksQueryOptions(Boolean(foldersQuery.data?.some((folder) => folder.sourceType === "x"))),
-  );
-  const queryPinnedFolder = foldersQuery.data?.find((folder) => folder.isPinned) ?? null;
-  const queryActiveFolderId = selectedFolderId === undefined ? queryPinnedFolder?.id ?? null : selectedFolderId;
-  const queryActiveFolder = foldersQuery.data?.find((folder) => folder.id === queryActiveFolderId) ?? null;
+  const xBookmarksQuery = useQuery(xBookmarksQueryOptions(isXFolderSelected));
   const githubItemsQuery = useQuery(
-    githubItemsQueryOptions(queryActiveFolder?.sourceType === "github" ? queryActiveFolder.id : null),
+    githubItemsQueryOptions(isGitHubFolderSelected ? activeFolderId : null),
   );
+
+  const prefetchFolderRows = React.useCallback(
+    (folder: BookmarkFolderRecord) => {
+      if (folder.sourceType === "x") {
+        void queryClient.prefetchQuery(xBookmarksQueryOptions(true));
+        return;
+      }
+
+      if (folder.sourceType === "github") {
+        void queryClient.prefetchQuery(githubItemsQueryOptions(folder.id));
+        return;
+      }
+
+      void queryClient.prefetchQuery(bookmarksQueryOptions(folder.id));
+    },
+    [queryClient],
+  );
+
+  const prefetchAllRows = React.useCallback(() => {
+    void queryClient.prefetchQuery(bookmarksQueryOptions(null));
+  }, [queryClient]);
 
   const getTagFromUrl = React.useCallback((urlValue: string) => {
     const normalizedContent = normalizeBookmarkContent(urlValue);
@@ -367,9 +671,7 @@ function AppIndex() {
         contentType: normalizedContent.contentType,
         url: normalizedContent.content,
         title:
-          normalizedContent.contentType === "text"
-            ? normalizedContent.content.slice(0, 80)
-            : null,
+          normalizedContent.contentType === "text" ? normalizedContent.content.slice(0, 80) : null,
         tag: getTagFromUrl(payload.url),
         folderId: payload.folderId ?? optimisticId,
         folderName: payload.folder || "default",
@@ -377,10 +679,18 @@ function AppIndex() {
         createdAt: new Date().toISOString(),
       };
 
-      queryClient.setQueryData(bookmarksQueryKey, (currentRows: BookmarkRecord[] | undefined) => [
-        optimisticRow,
-        ...(currentRows ?? []),
-      ]);
+      queryClient
+        .getQueriesData<BookmarkRecord[]>({ queryKey: [...bookmarksQueryKey, "list"] })
+        .forEach(([queryKey]) => {
+          if (!bookmarkBelongsInListCache(optimisticRow, queryKey)) {
+            return;
+          }
+
+          queryClient.setQueryData(queryKey, (currentRows: BookmarkRecord[] | undefined) => [
+            optimisticRow,
+            ...(currentRows ?? []),
+          ]);
+        });
       queryClient
         .getQueriesData<BookmarkRecord[]>({ queryKey: ["bookmarks", "search"] })
         .forEach(([queryKey, currentRows]) => {
@@ -416,7 +726,10 @@ function AppIndex() {
           );
         };
 
-        queryClient.setQueryData(bookmarksQueryKey, replaceOptimisticRow);
+        queryClient.setQueriesData(
+          { queryKey: [...bookmarksQueryKey, "list"] },
+          replaceOptimisticRow,
+        );
         queryClient.setQueriesData({ queryKey: ["bookmarks", "search"] }, replaceOptimisticRow);
       }
       toast.success("Bookmark saved. Embedding is processing in background.");
@@ -435,7 +748,10 @@ function AppIndex() {
           return currentRows.filter((item) => item.id !== context.optimisticId);
         };
 
-        queryClient.setQueryData(bookmarksQueryKey, removeOptimisticRow);
+        queryClient.setQueriesData(
+          { queryKey: [...bookmarksQueryKey, "list"] },
+          removeOptimisticRow,
+        );
         queryClient.setQueriesData({ queryKey: ["bookmarks", "search"] }, removeOptimisticRow);
       }
       const message = error instanceof Error ? error.message : "Could not save bookmark.";
@@ -458,8 +774,7 @@ function AppIndex() {
           return { success: true, id: bookmarkId };
         }
 
-        const message =
-          response.status === 401 ? "Please sign in." : "Could not delete bookmark.";
+        const message = response.status === 401 ? "Please sign in." : "Could not delete bookmark.";
         throw new Error(message);
       }
 
@@ -471,13 +786,16 @@ function AppIndex() {
         queryClient.cancelQueries({ queryKey: ["bookmarks", "search"] }),
       ]);
 
-      const previousBookmarks = queryClient.getQueryData<BookmarkRecord[]>(bookmarksQueryKey);
+      const previousBookmarkLists = queryClient.getQueriesData<BookmarkRecord[]>({
+        queryKey: [...bookmarksQueryKey, "list"],
+      });
       const previousSearches = queryClient.getQueriesData<BookmarkRecord[]>({
         queryKey: ["bookmarks", "search"],
       });
 
-      queryClient.setQueryData(bookmarksQueryKey, (currentRows: BookmarkRecord[] | undefined) =>
-        removeBookmarkRow(currentRows, bookmarkId),
+      queryClient.setQueriesData(
+        { queryKey: [...bookmarksQueryKey, "list"] },
+        (currentRows: BookmarkRecord[] | undefined) => removeBookmarkRow(currentRows, bookmarkId),
       );
       previousSearches.forEach(([queryKey]) => {
         queryClient.setQueryData(queryKey, (currentRows: BookmarkRecord[] | undefined) =>
@@ -485,13 +803,15 @@ function AppIndex() {
         );
       });
 
-      return { previousBookmarks, previousSearches };
+      return { previousBookmarkLists, previousSearches };
     },
     onSuccess: () => {
       toast.success("Bookmark deleted.");
     },
     onError: (error, _bookmarkId, context) => {
-      queryClient.setQueryData(bookmarksQueryKey, context?.previousBookmarks);
+      context?.previousBookmarkLists.forEach(([queryKey, rows]) => {
+        queryClient.setQueryData(queryKey, rows);
+      });
       context?.previousSearches.forEach(([queryKey, rows]) => {
         queryClient.setQueryData(queryKey, rows);
       });
@@ -534,21 +854,21 @@ function AppIndex() {
         queryClient.cancelQueries({ queryKey: ["bookmarks", "search"] }),
       ]);
 
-      const previousBookmarks = queryClient.getQueryData<BookmarkRecord[]>(bookmarksQueryKey);
+      const previousBookmarkLists = queryClient.getQueriesData<BookmarkRecord[]>({
+        queryKey: [...bookmarksQueryKey, "list"],
+      });
       const previousSearches = queryClient.getQueriesData<BookmarkRecord[]>({
         queryKey: ["bookmarks", "search"],
       });
       const renameRow = (currentRows: BookmarkRecord[] | undefined) =>
-        currentRows?.map((row) =>
-          row.id === payload.id ? { ...row, title: payload.title } : row,
-        );
+        currentRows?.map((row) => (row.id === payload.id ? { ...row, title: payload.title } : row));
 
-      queryClient.setQueryData(bookmarksQueryKey, renameRow);
+      queryClient.setQueriesData({ queryKey: [...bookmarksQueryKey, "list"] }, renameRow);
       previousSearches.forEach(([queryKey]) => {
         queryClient.setQueryData(queryKey, renameRow);
       });
 
-      return { previousBookmarks, previousSearches };
+      return { previousBookmarkLists, previousSearches };
     },
     onSuccess: () => {
       toast.success("Bookmark title updated.");
@@ -556,7 +876,9 @@ function AppIndex() {
       setBookmarkTitleValue("");
     },
     onError: (error, _payload, context) => {
-      queryClient.setQueryData(bookmarksQueryKey, context?.previousBookmarks);
+      context?.previousBookmarkLists.forEach(([queryKey, rows]) => {
+        queryClient.setQueryData(queryKey, rows);
+      });
       context?.previousSearches.forEach(([queryKey, rows]) => {
         queryClient.setQueryData(queryKey, rows);
       });
@@ -582,7 +904,9 @@ function AppIndex() {
       });
 
       if (!response.ok) {
-        throw new Error(response.status === 401 ? "Please sign in." : "Could not refetch metadata.");
+        throw new Error(
+          response.status === 401 ? "Please sign in." : "Could not refetch metadata.",
+        );
       }
     },
     onSuccess: async () => {
@@ -644,7 +968,8 @@ function AppIndex() {
     onMutate: async (payload) => {
       await queryClient.cancelQueries({ queryKey: bookmarkFoldersQueryKey });
 
-      const previousFolders = queryClient.getQueryData<BookmarkFolderRecord[]>(bookmarkFoldersQueryKey);
+      const previousFolders =
+        queryClient.getQueryData<BookmarkFolderRecord[]>(bookmarkFoldersQueryKey);
       const optimisticFolder: BookmarkFolderRecord = {
         id: `optimistic-folder-${crypto.randomUUID()}`,
         name: payload.name.toLowerCase(),
@@ -658,23 +983,36 @@ function AppIndex() {
         visibility: "private",
       };
 
-      queryClient.setQueryData(bookmarkFoldersQueryKey, (currentFolders: BookmarkFolderRecord[] | undefined) => [
-        ...(currentFolders ?? []),
-        optimisticFolder,
-      ]);
+      queryClient.setQueryData(
+        bookmarkFoldersQueryKey,
+        (currentFolders: BookmarkFolderRecord[] | undefined) => [
+          ...(currentFolders ?? []),
+          optimisticFolder,
+        ],
+      );
 
-      return { previousFolders };
+      return { previousFolders, optimisticFolderId: optimisticFolder.id };
     },
-    onSuccess: (folder) => {
-      queryClient.setQueryData(bookmarkFoldersQueryKey, (currentFolders: BookmarkFolderRecord[] | undefined) => {
-        if (!currentFolders) {
-          return [folder];
-        }
+    onSuccess: (folder, _payload, context) => {
+      queryClient.setQueryData(
+        bookmarkFoldersQueryKey,
+        (currentFolders: BookmarkFolderRecord[] | undefined) => {
+          if (!currentFolders) {
+            return [folder];
+          }
 
-        return currentFolders.map((item) =>
-          item.name === folder.name && item.sourceType === folder.sourceType ? folder : item,
-        );
-      });
+          const replacedFolders = currentFolders.map((item) =>
+            item.id === context?.optimisticFolderId ? folder : item,
+          );
+
+          if (replacedFolders.some((item) => item.id === folder.id)) {
+            return replacedFolders;
+          }
+
+          return [...replacedFolders, folder];
+        },
+      );
+      setSelectedFolderId(folder.id);
       toast.success(
         folder.sourceType === "local"
           ? "Folder created."
@@ -689,6 +1027,20 @@ function AppIndex() {
       setCustomFolderName("");
       if (folder.sourceType === "local") {
         setAddFolderId(folder.id);
+      }
+      if (folder.sourceType === "rss") {
+        void (async () => {
+          await queryClient.invalidateQueries({ queryKey: bookmarkFoldersQueryKey });
+          for (const waitMs of [750, 1500, 3000, 5000]) {
+            await delay(waitMs);
+            await Promise.all([
+              queryClient.invalidateQueries({
+                queryKey: [...bookmarksQueryKey, "list", folder.id],
+              }),
+              queryClient.invalidateQueries({ queryKey: bookmarkFoldersQueryKey }),
+            ]);
+          }
+        })();
       }
     },
     onError: (error, _variables, context) => {
@@ -717,12 +1069,15 @@ function AppIndex() {
     },
     onMutate: async (folderId) => {
       await queryClient.cancelQueries({ queryKey: bookmarkFoldersQueryKey });
-      const previousFolders = queryClient.getQueryData<BookmarkFolderRecord[]>(bookmarkFoldersQueryKey);
+      const previousFolders =
+        queryClient.getQueryData<BookmarkFolderRecord[]>(bookmarkFoldersQueryKey);
 
-      queryClient.setQueryData(bookmarkFoldersQueryKey, (currentFolders: BookmarkFolderRecord[] | undefined) =>
-        currentFolders?.map((folder) =>
-          folder.id === folderId ? { ...folder, unseenCount: 0 } : folder,
-        ),
+      queryClient.setQueryData(
+        bookmarkFoldersQueryKey,
+        (currentFolders: BookmarkFolderRecord[] | undefined) =>
+          currentFolders?.map((folder) =>
+            folder.id === folderId ? { ...folder, unseenCount: 0 } : folder,
+          ),
       );
 
       return { previousFolders };
@@ -757,12 +1112,17 @@ function AppIndex() {
     },
     onMutate: async (folderId) => {
       await queryClient.cancelQueries({ queryKey: bookmarkFoldersQueryKey });
-      const previousFolders = queryClient.getQueryData<BookmarkFolderRecord[]>(bookmarkFoldersQueryKey);
+      const previousFolders =
+        queryClient.getQueryData<BookmarkFolderRecord[]>(bookmarkFoldersQueryKey);
 
-      queryClient.setQueryData(bookmarkFoldersQueryKey, (currentFolders: BookmarkFolderRecord[] | undefined) =>
-        currentFolders
-          ?.map((folder) => ({ ...folder, isPinned: folder.id === folderId }))
-          .sort((a, b) => Number(b.isPinned) - Number(a.isPinned) || a.name.localeCompare(b.name)),
+      queryClient.setQueryData(
+        bookmarkFoldersQueryKey,
+        (currentFolders: BookmarkFolderRecord[] | undefined) =>
+          currentFolders
+            ?.map((folder) => ({ ...folder, isPinned: folder.id === folderId }))
+            .sort(
+              (a, b) => Number(b.isPinned) - Number(a.isPinned) || a.name.localeCompare(b.name),
+            ),
       );
       setSelectedFolderId(folderId);
 
@@ -802,12 +1162,15 @@ function AppIndex() {
     },
     onMutate: async (folderId) => {
       await queryClient.cancelQueries({ queryKey: bookmarkFoldersQueryKey });
-      const previousFolders = queryClient.getQueryData<BookmarkFolderRecord[]>(bookmarkFoldersQueryKey);
+      const previousFolders =
+        queryClient.getQueryData<BookmarkFolderRecord[]>(bookmarkFoldersQueryKey);
 
-      queryClient.setQueryData(bookmarkFoldersQueryKey, (currentFolders: BookmarkFolderRecord[] | undefined) =>
-        currentFolders?.map((folder) =>
-          folder.id === folderId ? { ...folder, lastSyncedAt: new Date().toISOString() } : folder,
-        ),
+      queryClient.setQueryData(
+        bookmarkFoldersQueryKey,
+        (currentFolders: BookmarkFolderRecord[] | undefined) =>
+          currentFolders?.map((folder) =>
+            folder.id === folderId ? { ...folder, lastSyncedAt: new Date().toISOString() } : folder,
+          ),
       );
 
       return { previousFolders };
@@ -869,33 +1232,44 @@ function AppIndex() {
         queryClient.cancelQueries({ queryKey: ["bookmarks", "search"] }),
       ]);
 
-      const previousFolders = queryClient.getQueryData<BookmarkFolderRecord[]>(bookmarkFoldersQueryKey);
-      const previousBookmarks = queryClient.getQueryData<BookmarkRecord[]>(bookmarksQueryKey);
+      const previousFolders =
+        queryClient.getQueryData<BookmarkFolderRecord[]>(bookmarkFoldersQueryKey);
+      const previousBookmarkLists = queryClient.getQueriesData<BookmarkRecord[]>({
+        queryKey: [...bookmarksQueryKey, "list"],
+      });
       const previousSearches = queryClient.getQueriesData<BookmarkRecord[]>({
         queryKey: ["bookmarks", "search"],
       });
 
-      queryClient.setQueryData(bookmarkFoldersQueryKey, (currentFolders: BookmarkFolderRecord[] | undefined) =>
-        currentFolders?.filter((folder) => folder.id !== folderId),
+      queryClient.setQueryData(
+        bookmarkFoldersQueryKey,
+        (currentFolders: BookmarkFolderRecord[] | undefined) =>
+          currentFolders?.filter((folder) => folder.id !== folderId),
       );
-      queryClient.setQueryData(bookmarksQueryKey, (currentRows: BookmarkRecord[] | undefined) =>
-        currentRows?.filter((row) => row.folderId !== folderId),
+      queryClient.setQueriesData(
+        { queryKey: [...bookmarksQueryKey, "list"] },
+        (currentRows: BookmarkRecord[] | undefined) =>
+          currentRows?.filter((row) => row.folderId !== folderId),
       );
       previousSearches.forEach(([queryKey]) => {
         queryClient.setQueryData(queryKey, (currentRows: BookmarkRecord[] | undefined) =>
           currentRows?.filter((row) => row.folderId !== folderId),
         );
       });
-      setSelectedFolderId((currentFolderId) => (currentFolderId === folderId ? null : currentFolderId));
+      setSelectedFolderId((currentFolderId) =>
+        currentFolderId === folderId ? null : currentFolderId,
+      );
 
-      return { previousFolders, previousBookmarks, previousSearches };
+      return { previousFolders, previousBookmarkLists, previousSearches };
     },
     onSuccess: () => {
       toast.success("Folder deleted.");
     },
     onError: (error, _folderId, context) => {
       queryClient.setQueryData(bookmarkFoldersQueryKey, context?.previousFolders);
-      queryClient.setQueryData(bookmarksQueryKey, context?.previousBookmarks);
+      context?.previousBookmarkLists.forEach(([queryKey, rows]) => {
+        queryClient.setQueryData(queryKey, rows);
+      });
       context?.previousSearches.forEach(([queryKey, rows]) => {
         queryClient.setQueryData(queryKey, rows);
       });
@@ -990,31 +1364,53 @@ function AppIndex() {
     renameBookmarkMutation.mutate({ id: renamingBookmark.id, title });
   };
 
-  const allRows = bookmarksQuery.data ?? [];
-  const fetchedRows: BookmarkRecord[] = search.trim()
+  const allRows = React.useMemo(() => bookmarksQuery.data ?? [], [bookmarksQuery.data]);
+  const normalizedSearch = search.trim();
+  const advancedSearchQuery = parseAdvancedSearchQuery(normalizedSearch);
+  const filteredRows = allRows.filter((row) =>
+    bookmarkMatchesAdvancedFilters(row, advancedSearchQuery.filters),
+  );
+  const fuzzyRows =
+    advancedSearchQuery.text && searchMode === "fuzzy"
+      ? new Fuse(filteredRows, {
+          keys: [
+            { name: "title", weight: 0.35 },
+            { name: "url", weight: 0.25 },
+            { name: "tag", weight: 0.15 },
+            { name: "folderName", weight: 0.15 },
+            {
+              name: "fuzzyText",
+              getFn: (row) => toFuzzySearchText(row as BookmarkRecord),
+              weight: 0.1,
+            },
+          ],
+          ignoreLocation: true,
+          includeScore: true,
+          minMatchCharLength: 2,
+          threshold: 0.35,
+        })
+          .search(advancedSearchQuery.text)
+          .map((result) => result.item)
+      : filteredRows;
+  const fetchedRows: BookmarkRecord[] = normalizedSearch
     ? searchMode === "semantic"
-      ? (searchQuery.data ?? [])
-      : allRows.filter((row) => bookmarkMatchesSearch(row, search))
+      ? (searchQuery.data ?? []).filter((row) => bookmarkMatchesSearch(row, normalizedSearch))
+      : searchMode === "fuzzy"
+        ? fuzzyRows
+        : filteredRows.filter((row) => bookmarkMatchesSearch(row, normalizedSearch))
     : allRows;
-  const folders = foldersQuery.data ?? [];
-  const manualFolders = folders.filter((folder) => folder.sourceType === "local");
-  const pinnedFolder = folders.find((folder) => folder.isPinned) ?? null;
-  const activeFolderId = selectedFolderId === undefined ? pinnedFolder?.id ?? null : selectedFolderId;
-  const selectedFolder = folders.find((folder) => folder.id === activeFolderId) ?? null;
-  const isXFolderSelected = selectedFolder?.sourceType === "x";
-  const isGitHubFolderSelected = selectedFolder?.sourceType === "github";
-  const defaultFolder = manualFolders.find((folder) => folder.name === "default") ?? null;
   const addFolder =
     manualFolders.find((folder) => folder.id === addFolderId) ??
     (selectedFolder?.sourceType === "local" ? selectedFolder : null) ??
     defaultFolder ??
     manualFolders[0] ??
     null;
-  const visibleRows = isXFolderSelected || isGitHubFolderSelected
-    ? []
-    : activeFolderId
-      ? fetchedRows.filter((row) => row.folderId === activeFolderId)
-      : fetchedRows;
+  const visibleRows =
+    isXFolderSelected || isGitHubFolderSelected
+      ? []
+      : activeFolderId
+        ? fetchedRows.filter((row) => row.folderId === activeFolderId)
+        : fetchedRows;
   const xRows = (xBookmarksQuery.data?.bookmarks ?? []).filter((row) => {
     const normalizedSearch = search.trim().toLowerCase();
     if (!isXFolderSelected || !normalizedSearch) {
@@ -1040,18 +1436,24 @@ function AppIndex() {
   const liveFolderSourceTypes = new Set(
     folders.filter((folder) => folder.sourceType !== "local").map((folder) => folder.sourceType),
   );
-  const isLoadingRows =
-    isXFolderSelected
-      ? xBookmarksQuery.isLoading
-      : isGitHubFolderSelected
-        ? githubItemsQuery.isLoading
-        : search.trim() && searchMode === "semantic" ? searchQuery.isLoading : bookmarksQuery.isLoading;
-  const isRefreshingRows =
-    isXFolderSelected
-      ? xBookmarksQuery.isFetching
-      : isGitHubFolderSelected
-        ? githubItemsQuery.isFetching
-        : search.trim() && searchMode === "semantic" ? searchQuery.isFetching : bookmarksQuery.isFetching;
+  const primaryFolders = folders.slice(0, 5);
+  const overflowFolders = folders.filter(
+    (folder) => !primaryFolders.some((item) => item.id === folder.id),
+  );
+  const isLoadingRows = isXFolderSelected
+    ? xBookmarksQuery.isLoading
+    : isGitHubFolderSelected
+      ? githubItemsQuery.isLoading
+      : search.trim() && searchMode === "semantic"
+        ? searchQuery.isLoading
+        : bookmarksQuery.isLoading;
+  const isRefreshingRows = isXFolderSelected
+    ? xBookmarksQuery.isFetching
+    : isGitHubFolderSelected
+      ? githubItemsQuery.isFetching
+      : search.trim() && searchMode === "semantic"
+        ? searchQuery.isFetching
+        : bookmarksQuery.isFetching;
   const rowPaginationScope = [
     isXFolderSelected ? "x" : isGitHubFolderSelected ? "github" : "bookmarks",
     activeFolderId ?? "all",
@@ -1069,6 +1471,16 @@ function AppIndex() {
   const displayedXRows = xRows.slice(0, visibleRowLimit);
   const displayedGitHubRows = githubRows.slice(0, visibleRowLimit);
   const displayedVisibleRows = visibleRows.slice(0, visibleRowLimit);
+  const displayedRowCount = isXFolderSelected
+    ? displayedXRows.length
+    : isGitHubFolderSelected
+      ? displayedGitHubRows.length
+      : displayedVisibleRows.length;
+  const [virtualListRef, virtualStart, virtualEnd, virtualPaddingTop, virtualPaddingBottom] =
+    useWindowVirtualRange(displayedRowCount, rowPaginationScope);
+  const virtualDisplayedXRows = displayedXRows.slice(virtualStart, virtualEnd);
+  const virtualDisplayedGitHubRows = displayedGitHubRows.slice(virtualStart, virtualEnd);
+  const virtualDisplayedVisibleRows = displayedVisibleRows.slice(virtualStart, virtualEnd);
 
   React.useEffect(() => {
     const target = loadMoreRef.current;
@@ -1081,7 +1493,9 @@ function AppIndex() {
         if (entries.some((entry) => entry.isIntersecting)) {
           setRowPagination((currentPagination) => {
             const currentLimit =
-              currentPagination.scope === rowPaginationScope ? currentPagination.limit : ROW_PAGE_SIZE;
+              currentPagination.scope === rowPaginationScope
+                ? currentPagination.limit
+                : ROW_PAGE_SIZE;
 
             return {
               scope: rowPaginationScope,
@@ -1106,8 +1520,36 @@ function AppIndex() {
     }
   }, []);
 
+  const openExternalUrl = React.useCallback((url: string) => {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }, []);
+
+  const activateBookmarkRow = React.useCallback(
+    (item: BookmarkRecord) => {
+      if (item.contentType === "link") {
+        openExternalUrl(item.url);
+        return;
+      }
+
+      void copyBookmarkUrl(item.url);
+    },
+    [copyBookmarkUrl, openExternalUrl],
+  );
+
+  const handleRowKeyDown = React.useCallback(
+    (event: React.KeyboardEvent<HTMLElement>, action: () => void) => {
+      if (event.key !== "Enter" && event.key !== " ") {
+        return;
+      }
+
+      event.preventDefault();
+      action();
+    },
+    [],
+  );
+
   return (
-    <main className="mx-auto w-full max-w-6xl px-4 py-6">
+    <main className="mx-auto w-full max-w-6xl px-4 pt-6 pb-12">
       <div className="mx-auto w-full">
         <form className="mb-5" onSubmit={submitBookmark}>
           <div className="flex min-h-11 items-center rounded-lg border bg-card/90 shadow-sm shadow-foreground/5 transition-all duration-150 focus-within:border-ring/50 focus-within:ring-3 focus-within:ring-ring/10">
@@ -1153,7 +1595,9 @@ function AppIndex() {
               placeholder={
                 searchMode === "semantic"
                   ? "Add a bookmark, or search semantically..."
-                  : "Add a bookmark, or search exact text..."
+                  : searchMode === "fuzzy"
+                    ? "Add a bookmark, or fuzzy search..."
+                    : "Add a bookmark, or search exact text..."
               }
               value={inputValue}
               onChange={(event) => setInputValue(event.target.value)}
@@ -1170,24 +1614,25 @@ function AppIndex() {
                   <SearchIcon className="size-3.5" />
                 )}
                 <span className="hidden sm:inline">
-                  {searchMode === "semantic" ? "semantic" : "exact"}
+                  {searchMode === "semantic" ? "semantic" : searchMode}
                 </span>
               </DropdownMenuTrigger>
               <DropdownMenuContent className="w-52 rounded-lg p-1" align="end">
-                <DropdownMenuItem
-                  className="gap-2"
-                  onClick={() => setSearchMode("semantic")}
-                >
+                <DropdownMenuItem className="gap-2" onClick={() => setSearchMode("semantic")}>
                   <SparklesIcon className="size-3.5" />
                   <span>Semantic search</span>
                   {searchMode === "semantic" ? (
                     <CheckSquareIcon className="ml-auto size-3.5 text-muted-foreground" />
                   ) : null}
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="gap-2"
-                  onClick={() => setSearchMode("exact")}
-                >
+                <DropdownMenuItem className="gap-2" onClick={() => setSearchMode("fuzzy")}>
+                  <SearchIcon className="size-3.5" />
+                  <span>Fuzzy search</span>
+                  {searchMode === "fuzzy" ? (
+                    <CheckSquareIcon className="ml-auto size-3.5 text-muted-foreground" />
+                  ) : null}
+                </DropdownMenuItem>
+                <DropdownMenuItem className="gap-2" onClick={() => setSearchMode("exact")}>
                   <SearchIcon className="size-3.5" />
                   <span>Exact search</span>
                   {searchMode === "exact" ? (
@@ -1208,14 +1653,14 @@ function AppIndex() {
         </form>
 
         <div className="my-4 flex flex-wrap items-center gap-2">
-          {foldersQuery.isLoading ? (
-            Array.from({ length: 3 }).map((_, index) => (
-              <div
-                key={`folder-skeleton-${index}`}
-                className="h-8 w-24 animate-pulse rounded-md border bg-muted/50"
-              />
-            ))
-          ) : null}
+          {foldersQuery.isLoading
+            ? Array.from({ length: 3 }).map((_, index) => (
+                <div
+                  key={`folder-skeleton-${index}`}
+                  className="h-8 w-24 animate-pulse rounded-md border bg-muted/50"
+                />
+              ))
+            : null}
 
           {!foldersQuery.isLoading ? (
             <button
@@ -1223,6 +1668,8 @@ function AppIndex() {
               className="inline-flex h-8 items-center gap-2 rounded-md border bg-background px-2.5 text-sm text-foreground shadow-sm shadow-foreground/5 transition-all hover:-translate-y-px hover:bg-muted/60 aria-pressed:bg-muted"
               aria-pressed={!activeFolderId}
               onClick={() => setSelectedFolderId(null)}
+              onFocus={prefetchAllRows}
+              onMouseEnter={prefetchAllRows}
             >
               <FolderIcon className="size-3.5 text-muted-foreground" />
               All
@@ -1230,20 +1677,26 @@ function AppIndex() {
           ) : null}
 
           {!foldersQuery.isLoading &&
-            folders.map((folder) => (
+            primaryFolders.map((folder) => (
               <ContextMenu key={folder.id}>
                 <ContextMenuTrigger className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
                   <button
                     type="button"
                     className="inline-flex h-8 max-w-48 items-center gap-2 rounded-md border bg-background px-2.5 text-sm text-foreground shadow-sm shadow-foreground/5 transition-all hover:-translate-y-px hover:bg-muted/60 aria-pressed:bg-muted data-[state=open]:bg-muted"
                     aria-pressed={activeFolderId === folder.id}
+                    onFocus={() => prefetchFolderRows(folder)}
+                    onMouseEnter={() => prefetchFolderRows(folder)}
                     onClick={() => {
                       setSelectedFolderId(folder.id);
                       if (folder.unseenCount > 0) {
                         markFolderSeenMutation.mutate(folder.id);
                       }
                     }}
-                    title={folder.sourceType === "local" ? folder.name : `${getFolderSourceLabel(folder.sourceType)} live folder`}
+                    title={
+                      folder.sourceType === "local"
+                        ? folder.name
+                        : `${getFolderSourceLabel(folder.sourceType)} live folder`
+                    }
                   >
                     <span className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground">
                       <FolderSourceIcon sourceType={folder.sourceType} />
@@ -1295,21 +1748,110 @@ function AppIndex() {
                     Mark as seen
                   </ContextMenuItem>
                   <ContextMenuSeparator />
-                  <ContextMenuItem
+                  <HoldToDelete
+                    mode="menu-item"
                     disabled={folder.name === "default" || deleteFolderMutation.isPending}
-                    variant="destructive"
-                    onClick={() => deleteFolderMutation.mutate(folder.id)}
+                    isPending={deleteFolderMutation.isPending}
+                    onDelete={() => deleteFolderMutation.mutate(folder.id)}
                   >
-                    {deleteFolderMutation.isPending ? (
-                      <Loader2Icon className="size-4 animate-spin" />
-                    ) : (
-                      <Trash2Icon />
-                    )}
                     Delete folder
-                  </ContextMenuItem>
+                  </HoldToDelete>
                 </ContextMenuContent>
               </ContextMenu>
             ))}
+
+          {!foldersQuery.isLoading && overflowFolders.length > 0 ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 text-sm text-muted-foreground shadow-sm shadow-foreground/5 transition-all hover:-translate-y-px hover:bg-muted/60 hover:text-foreground">
+                <FolderIcon className="size-3.5" />
+                Folders
+                <ChevronDownIcon className="size-3.5" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                className="max-h-96 w-64 overflow-y-auto rounded-lg p-1"
+                align="start"
+              >
+                {overflowFolders.map((folder) => (
+                  <DropdownMenuSub key={folder.id}>
+                    <DropdownMenuSubTrigger
+                      className="gap-2"
+                      onFocus={() => prefetchFolderRows(folder)}
+                      onMouseEnter={() => prefetchFolderRows(folder)}
+                    >
+                      <span className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground">
+                        <FolderSourceIcon sourceType={folder.sourceType} />
+                      </span>
+                      <span className="truncate">{folder.name}</span>
+                      {folder.isPinned ? (
+                        <PinIcon className="ml-auto size-3 shrink-0 text-muted-foreground" />
+                      ) : null}
+                      {folder.id === activeFolderId ? (
+                        <CheckSquareIcon className="ml-auto size-3.5 shrink-0 text-muted-foreground" />
+                      ) : null}
+                      {folder.unseenCount > 0 ? (
+                        <span className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] text-primary-foreground">
+                          {folder.unseenCount}
+                        </span>
+                      ) : null}
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="min-w-44">
+                      <DropdownMenuItem
+                        onClick={() => {
+                          setSelectedFolderId(folder.id);
+                          if (folder.unseenCount > 0) {
+                            markFolderSeenMutation.mutate(folder.id);
+                          }
+                        }}
+                      >
+                        <FolderSourceIcon sourceType={folder.sourceType} />
+                        Open folder
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={folder.isPinned || pinFolderMutation.isPending}
+                        onClick={() => pinFolderMutation.mutate(folder.id)}
+                      >
+                        {pinFolderMutation.isPending ? (
+                          <Loader2Icon className="size-4 animate-spin" />
+                        ) : (
+                          <PinIcon />
+                        )}
+                        {folder.isPinned ? "Pinned" : "Pin folder"}
+                      </DropdownMenuItem>
+                      {folder.sourceType !== "local" ? (
+                        <DropdownMenuItem
+                          disabled={syncFolderMutation.isPending}
+                          onClick={() => syncFolderMutation.mutate(folder.id)}
+                        >
+                          {syncFolderMutation.isPending ? (
+                            <Loader2Icon className="size-4 animate-spin" />
+                          ) : (
+                            <RefreshCwIcon />
+                          )}
+                          Sync now
+                        </DropdownMenuItem>
+                      ) : null}
+                      <DropdownMenuItem
+                        disabled={folder.unseenCount === 0}
+                        onClick={() => markFolderSeenMutation.mutate(folder.id)}
+                      >
+                        <CheckSquareIcon />
+                        Mark as seen
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <HoldToDelete
+                        mode="menu-item"
+                        disabled={folder.name === "default" || deleteFolderMutation.isPending}
+                        isPending={deleteFolderMutation.isPending}
+                        onDelete={() => deleteFolderMutation.mutate(folder.id)}
+                      >
+                        Delete folder
+                      </HoldToDelete>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
 
           <DropdownMenu>
             <DropdownMenuTrigger className="inline-flex h-8 items-center gap-1.5 rounded-md border border-dashed bg-background px-2.5 text-sm text-muted-foreground shadow-sm shadow-foreground/5 transition-all hover:-translate-y-px hover:bg-muted/60 hover:text-foreground">
@@ -1377,265 +1919,267 @@ function AppIndex() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-
-          <Dialog
-            open={isRssFolderDialogOpen}
-            onOpenChange={(open) => {
-              setIsRssFolderDialogOpen(open);
-              if (!open) {
-                setRssFeedUrl("");
-              }
-            }}
-          >
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Add RSS live folder</DialogTitle>
-                <DialogDescription>
-                  Paste an RSS or Atom feed URL. The folder name is read from the feed channel and new items sync automatically.
-                </DialogDescription>
-              </DialogHeader>
-              <form className="grid gap-4" onSubmit={submitRssFolder}>
-                <div className="grid gap-2">
-                  <label className="text-sm font-medium text-foreground" htmlFor="rss-feed-url">
-                    Feed URL
-                  </label>
-                  <Input
-                    id="rss-feed-url"
-                    className="h-9 rounded-md text-sm"
-                    placeholder="https://example.com/feed.xml"
-                    value={rssFeedUrl}
-                    onChange={(event) => setRssFeedUrl(event.target.value)}
-                    required
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Multiple RSS folders are allowed. Each feed is tracked separately.
-                  </p>
-                </div>
-                <DialogFooter>
-                  <button
-                    type="button"
-                    className="inline-flex h-9 items-center justify-center rounded-md px-3 text-sm text-muted-foreground hover:bg-muted"
-                    onClick={() => {
-                      setIsRssFolderDialogOpen(false);
-                      setRssFeedUrl("");
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
-                    disabled={createLiveFolderMutation.isPending}
-                  >
-                    {createLiveFolderMutation.isPending ? (
-                      <Loader2Icon className="size-3.5 animate-spin" />
-                    ) : null}
-                    {createLiveFolderMutation.isPending ? "Adding" : "Add live folder"}
-                  </button>
-                </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
-
-          <Dialog
-            open={isGitHubFolderDialogOpen}
-            onOpenChange={(open) => {
-              setIsGitHubFolderDialogOpen(open);
-              if (!open) {
-                setGithubRepoValue("");
-                setGithubResourceType("all");
-              }
-            }}
-          >
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Add GitHub live folder</DialogTitle>
-                <DialogDescription>
-                  Connect GitHub, then choose a repository stream. Issues, PRs, and releases are fetched live.
-                </DialogDescription>
-              </DialogHeader>
-              <form className="grid gap-4" onSubmit={submitGitHubFolder}>
-                <div className="grid gap-2">
-                  <label className="text-sm font-medium text-foreground" htmlFor="github-repo">
-                    Repository
-                  </label>
-                  <Input
-                    id="github-repo"
-                    className="h-9 rounded-md text-sm"
-                    placeholder="owner/repo"
-                    value={githubRepoValue}
-                    onChange={(event) => setGithubRepoValue(event.target.value)}
-                    required
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <p className="text-sm font-medium text-foreground">Stream</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    {(["all", "issues", "pulls", "releases"] as const).map((resourceType) => (
-                      <button
-                        key={resourceType}
-                        type="button"
-                        className="inline-flex h-9 items-center justify-center gap-2 rounded-md border bg-background px-3 text-sm capitalize text-muted-foreground transition-colors hover:bg-muted hover:text-foreground aria-pressed:border-ring aria-pressed:bg-muted aria-pressed:text-foreground"
-                        aria-pressed={githubResourceType === resourceType}
-                        onClick={() => setGithubResourceType(resourceType)}
-                      >
-                        {resourceType === "pulls" ? (
-                          <GitPullRequestIcon className="size-3.5" />
-                        ) : (
-                          <SiGithub className="size-3.5" />
-                        )}
-                        {resourceType}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <DialogFooter>
-                  <button
-                    type="button"
-                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm text-muted-foreground hover:bg-muted disabled:opacity-50"
-                    disabled={connectGitHubMutation.isPending}
-                    onClick={() => connectGitHubMutation.mutate()}
-                  >
-                    {connectGitHubMutation.isPending ? (
-                      <Loader2Icon className="size-3.5 animate-spin" />
-                    ) : (
-                      <SiGithub className="size-3.5" />
-                    )}
-                    Connect GitHub
-                  </button>
-                  <button
-                    type="submit"
-                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
-                    disabled={createLiveFolderMutation.isPending}
-                  >
-                    {createLiveFolderMutation.isPending ? (
-                      <Loader2Icon className="size-3.5 animate-spin" />
-                    ) : null}
-                    {createLiveFolderMutation.isPending ? "Adding" : "Add live folder"}
-                  </button>
-                </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
-
-          <Dialog
-            open={isCustomFolderDialogOpen}
-            onOpenChange={(open) => {
-              setIsCustomFolderDialogOpen(open);
-              if (!open) {
-                setCustomFolderName("");
-              }
-            }}
-          >
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Create folder</DialogTitle>
-                <DialogDescription>
-                  Manual folders can be selected from the input and used when saving new bookmarks.
-                </DialogDescription>
-              </DialogHeader>
-              <form className="grid gap-4" onSubmit={submitCustomFolder}>
-                <div className="grid gap-2">
-                  <label className="text-sm font-medium text-foreground" htmlFor="custom-folder-name">
-                    Folder name
-                  </label>
-                  <Input
-                    id="custom-folder-name"
-                    className="h-9 rounded-md text-sm"
-                    placeholder="reading list"
-                    value={customFolderName}
-                    onChange={(event) => setCustomFolderName(event.target.value)}
-                    required
-                  />
-                </div>
-                <DialogFooter>
-                  <button
-                    type="button"
-                    className="inline-flex h-9 items-center justify-center rounded-md px-3 text-sm text-muted-foreground hover:bg-muted"
-                    onClick={() => {
-                      setIsCustomFolderDialogOpen(false);
-                      setCustomFolderName("");
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
-                    disabled={createLiveFolderMutation.isPending}
-                  >
-                    {createLiveFolderMutation.isPending ? (
-                      <Loader2Icon className="size-3.5 animate-spin" />
-                    ) : null}
-                    {createLiveFolderMutation.isPending ? "Creating" : "Create folder"}
-                  </button>
-                </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
-
-          <Dialog
-            open={Boolean(renamingBookmark)}
-            onOpenChange={(open) => {
-              if (!open) {
-                setRenamingBookmark(null);
-                setBookmarkTitleValue("");
-              }
-            }}
-          >
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Rename bookmark</DialogTitle>
-                <DialogDescription>
-                  This title is used in the list, exact search, and future semantic indexing.
-                </DialogDescription>
-              </DialogHeader>
-              <form className="grid gap-4" onSubmit={submitBookmarkTitle}>
-                <div className="grid gap-2">
-                  <label className="text-sm font-medium text-foreground" htmlFor="bookmark-title">
-                    Title
-                  </label>
-                  <Input
-                    id="bookmark-title"
-                    className="h-9 rounded-md text-sm"
-                    value={bookmarkTitleValue}
-                    onChange={(event) => setBookmarkTitleValue(event.target.value)}
-                    required
-                  />
-                </div>
-                <DialogFooter>
-                  <button
-                    type="button"
-                    className="inline-flex h-9 items-center justify-center rounded-md px-3 text-sm text-muted-foreground hover:bg-muted"
-                    onClick={() => {
-                      setRenamingBookmark(null);
-                      setBookmarkTitleValue("");
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
-                    disabled={renameBookmarkMutation.isPending}
-                  >
-                    {renameBookmarkMutation.isPending ? (
-                      <Loader2Icon className="size-3.5 animate-spin" />
-                    ) : null}
-                    {renameBookmarkMutation.isPending ? "Saving" : "Save title"}
-                  </button>
-                </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
         </div>
-        
+
+        <Dialog
+          open={isRssFolderDialogOpen}
+          onOpenChange={(open) => {
+            setIsRssFolderDialogOpen(open);
+            if (!open) {
+              setRssFeedUrl("");
+            }
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Add RSS live folder</DialogTitle>
+              <DialogDescription>
+                Paste an RSS or Atom feed URL. The folder name is read from the feed channel and new
+                items sync automatically.
+              </DialogDescription>
+            </DialogHeader>
+            <form className="grid gap-4" onSubmit={submitRssFolder}>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium text-foreground" htmlFor="rss-feed-url">
+                  Feed URL
+                </label>
+                <Input
+                  id="rss-feed-url"
+                  className="h-9 rounded-md text-sm"
+                  placeholder="https://example.com/feed.xml"
+                  value={rssFeedUrl}
+                  onChange={(event) => setRssFeedUrl(event.target.value)}
+                  required
+                />
+                <p className="text-xs text-muted-foreground">
+                  Multiple RSS folders are allowed. Each feed is tracked separately.
+                </p>
+              </div>
+              <DialogFooter>
+                <button
+                  type="button"
+                  className="inline-flex h-9 items-center justify-center rounded-md px-3 text-sm text-muted-foreground hover:bg-muted"
+                  onClick={() => {
+                    setIsRssFolderDialogOpen(false);
+                    setRssFeedUrl("");
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
+                  disabled={createLiveFolderMutation.isPending}
+                >
+                  {createLiveFolderMutation.isPending ? (
+                    <Loader2Icon className="size-3.5 animate-spin" />
+                  ) : null}
+                  {createLiveFolderMutation.isPending ? "Adding" : "Add live folder"}
+                </button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={isGitHubFolderDialogOpen}
+          onOpenChange={(open) => {
+            setIsGitHubFolderDialogOpen(open);
+            if (!open) {
+              setGithubRepoValue("");
+              setGithubResourceType("all");
+            }
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Add GitHub live folder</DialogTitle>
+              <DialogDescription>
+                Connect GitHub, then choose a repository stream. Issues, PRs, and releases are
+                fetched live.
+              </DialogDescription>
+            </DialogHeader>
+            <form className="grid gap-4" onSubmit={submitGitHubFolder}>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium text-foreground" htmlFor="github-repo">
+                  Repository
+                </label>
+                <Input
+                  id="github-repo"
+                  className="h-9 rounded-md text-sm"
+                  placeholder="owner/repo"
+                  value={githubRepoValue}
+                  onChange={(event) => setGithubRepoValue(event.target.value)}
+                  required
+                />
+              </div>
+              <div className="grid gap-2">
+                <p className="text-sm font-medium text-foreground">Stream</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {(["all", "issues", "pulls", "releases"] as const).map((resourceType) => (
+                    <button
+                      key={resourceType}
+                      type="button"
+                      className="inline-flex h-9 items-center justify-center gap-2 rounded-md border bg-background px-3 text-sm text-muted-foreground capitalize transition-colors hover:bg-muted hover:text-foreground aria-pressed:border-ring aria-pressed:bg-muted aria-pressed:text-foreground"
+                      aria-pressed={githubResourceType === resourceType}
+                      onClick={() => setGithubResourceType(resourceType)}
+                    >
+                      {resourceType === "pulls" ? (
+                        <GitPullRequestIcon className="size-3.5" />
+                      ) : (
+                        <SiGithub className="size-3.5" />
+                      )}
+                      {resourceType}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <DialogFooter>
+                <button
+                  type="button"
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm text-muted-foreground hover:bg-muted disabled:opacity-50"
+                  disabled={connectGitHubMutation.isPending}
+                  onClick={() => connectGitHubMutation.mutate()}
+                >
+                  {connectGitHubMutation.isPending ? (
+                    <Loader2Icon className="size-3.5 animate-spin" />
+                  ) : (
+                    <SiGithub className="size-3.5" />
+                  )}
+                  Connect GitHub
+                </button>
+                <button
+                  type="submit"
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
+                  disabled={createLiveFolderMutation.isPending}
+                >
+                  {createLiveFolderMutation.isPending ? (
+                    <Loader2Icon className="size-3.5 animate-spin" />
+                  ) : null}
+                  {createLiveFolderMutation.isPending ? "Adding" : "Add live folder"}
+                </button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={isCustomFolderDialogOpen}
+          onOpenChange={(open) => {
+            setIsCustomFolderDialogOpen(open);
+            if (!open) {
+              setCustomFolderName("");
+            }
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Create folder</DialogTitle>
+              <DialogDescription>
+                Manual folders can be selected from the input and used when saving new bookmarks.
+              </DialogDescription>
+            </DialogHeader>
+            <form className="grid gap-4" onSubmit={submitCustomFolder}>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium text-foreground" htmlFor="custom-folder-name">
+                  Folder name
+                </label>
+                <Input
+                  id="custom-folder-name"
+                  className="h-9 rounded-md text-sm"
+                  placeholder="reading list"
+                  value={customFolderName}
+                  onChange={(event) => setCustomFolderName(event.target.value)}
+                  required
+                />
+              </div>
+              <DialogFooter>
+                <button
+                  type="button"
+                  className="inline-flex h-9 items-center justify-center rounded-md px-3 text-sm text-muted-foreground hover:bg-muted"
+                  onClick={() => {
+                    setIsCustomFolderDialogOpen(false);
+                    setCustomFolderName("");
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
+                  disabled={createLiveFolderMutation.isPending}
+                >
+                  {createLiveFolderMutation.isPending ? (
+                    <Loader2Icon className="size-3.5 animate-spin" />
+                  ) : null}
+                  {createLiveFolderMutation.isPending ? "Creating" : "Create folder"}
+                </button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(renamingBookmark)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setRenamingBookmark(null);
+              setBookmarkTitleValue("");
+            }
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Rename bookmark</DialogTitle>
+              <DialogDescription>
+                This title is used in the list, exact search, and future semantic indexing.
+              </DialogDescription>
+            </DialogHeader>
+            <form className="grid gap-4" onSubmit={submitBookmarkTitle}>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium text-foreground" htmlFor="bookmark-title">
+                  Title
+                </label>
+                <Input
+                  id="bookmark-title"
+                  className="h-9 rounded-md text-sm"
+                  value={bookmarkTitleValue}
+                  onChange={(event) => setBookmarkTitleValue(event.target.value)}
+                  required
+                />
+              </div>
+              <DialogFooter>
+                <button
+                  type="button"
+                  className="inline-flex h-9 items-center justify-center rounded-md px-3 text-sm text-muted-foreground hover:bg-muted"
+                  onClick={() => {
+                    setRenamingBookmark(null);
+                    setBookmarkTitleValue("");
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
+                  disabled={renameBookmarkMutation.isPending}
+                >
+                  {renameBookmarkMutation.isPending ? (
+                    <Loader2Icon className="size-3.5 animate-spin" />
+                  ) : null}
+                  {renameBookmarkMutation.isPending ? "Saving" : "Save title"}
+                </button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
         <div className="grid grid-cols-[minmax(0,1fr)_86px] border-b pb-2 text-sm text-muted-foreground">
           <p>Marks</p>
           <p className="text-right">Created At</p>
         </div>
 
-        <ul className="divide-y divide-border/60">
+        <ul ref={virtualListRef} className="divide-y divide-border/60">
           {isLoadingRows || (isRefreshingRows && totalVisibleRows === 0)
             ? Array.from({ length: 6 }).map((_, index) => (
                 <li
@@ -1656,44 +2200,53 @@ function AppIndex() {
               ))
             : null}
 
-          {!isLoadingRows &&
-            isXFolderSelected &&
-            xBookmarksQuery.data?.error ? (
-              <li className="px-2 py-10 text-center">
-                <p className="text-sm text-foreground">{xBookmarksQuery.data.error}</p>
-                {xBookmarksQuery.data.status ? (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    X API status {xBookmarksQuery.data.status}
-                  </p>
-                ) : null}
-              </li>
-            ) : null}
+          {!isLoadingRows && isXFolderSelected && xBookmarksQuery.data?.error ? (
+            <li className="px-2 py-10 text-center">
+              <p className="text-sm text-foreground">{xBookmarksQuery.data.error}</p>
+              {xBookmarksQuery.data.status ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  X API status {xBookmarksQuery.data.status}
+                </p>
+              ) : null}
+            </li>
+          ) : null}
+
+          {!isLoadingRows && displayedRowCount > 0 && virtualPaddingTop > 0 ? (
+            <li
+              aria-hidden="true"
+              className="pointer-events-none border-0"
+              style={{ height: virtualPaddingTop }}
+            />
+          ) : null}
 
           {!isLoadingRows &&
             isXFolderSelected &&
             !xBookmarksQuery.data?.error &&
-            displayedXRows.map((item) => (
+            virtualDisplayedXRows.map((item) => (
               <li key={item.id} className="py-1">
                 <ContextMenu>
                   <ContextMenuTrigger className="block w-full rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
-                    <div className="grid grid-cols-[minmax(0,1fr)_86px] items-start gap-3 rounded-md px-2 py-2 transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 data-[state=open]:bg-muted/50">
+                    <button
+                      type="button"
+                      className="grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_86px] items-start gap-3 rounded-md px-2 py-2 text-left transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 focus-visible:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring/30 data-[state=open]:bg-muted/50"
+                      onClick={() => openExternalUrl(item.url)}
+                      onKeyDown={(event) =>
+                        handleRowKeyDown(event, () => openExternalUrl(item.url))
+                      }
+                      onMouseEnter={(event) => event.currentTarget.focus({ preventScroll: true })}
+                    >
                       <div className="flex min-w-0 items-start gap-2.5">
                         <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground">
                           <SiX className="size-3.5" />
                         </span>
                         <div className="min-w-0">
-                          <a
-                            href={item.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="block truncate text-sm text-foreground hover:underline"
-                          >
+                          <span className="block truncate text-sm text-foreground">
                             {item.title}
-                          </a>
+                          </span>
                           {search.trim() ? (
                             <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
                               <span className="truncate text-xs text-muted-foreground">
-                                {item.username ? `@${item.username}` : item.authorName ?? "X"}
+                                {item.username ? `@${item.username}` : (item.authorName ?? "X")}
                               </span>
                             </div>
                           ) : null}
@@ -1707,14 +2260,16 @@ function AppIndex() {
                             })
                           : ""}
                       </p>
-                    </div>
+                    </button>
                   </ContextMenuTrigger>
                   <ContextMenuContent className="min-w-44 rounded-lg p-1">
                     <ContextMenuItem onClick={() => void copyBookmarkUrl(item.url)}>
                       <ClipboardIcon />
                       Copy URL
                     </ContextMenuItem>
-                    <ContextMenuItem onClick={() => window.open(item.url, "_blank", "noopener,noreferrer")}>
+                    <ContextMenuItem
+                      onClick={() => window.open(item.url, "_blank", "noopener,noreferrer")}
+                    >
                       <ExternalLinkIcon />
                       Open on X
                     </ContextMenuItem>
@@ -1723,27 +2278,33 @@ function AppIndex() {
               </li>
             ))}
 
-          {!isLoadingRows &&
-            isGitHubFolderSelected &&
-            githubItemsQuery.data?.error ? (
-              <li className="px-2 py-10 text-center">
-                <p className="text-sm text-foreground">{githubItemsQuery.data.error}</p>
-                {githubItemsQuery.data.status ? (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    GitHub API status {githubItemsQuery.data.status}
-                  </p>
-                ) : null}
-              </li>
-            ) : null}
+          {!isLoadingRows && isGitHubFolderSelected && githubItemsQuery.data?.error ? (
+            <li className="px-2 py-10 text-center">
+              <p className="text-sm text-foreground">{githubItemsQuery.data.error}</p>
+              {githubItemsQuery.data.status ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  GitHub API status {githubItemsQuery.data.status}
+                </p>
+              ) : null}
+            </li>
+          ) : null}
 
           {!isLoadingRows &&
             isGitHubFolderSelected &&
             !githubItemsQuery.data?.error &&
-            displayedGitHubRows.map((item) => (
+            virtualDisplayedGitHubRows.map((item) => (
               <li key={item.id} className="py-1">
                 <ContextMenu>
                   <ContextMenuTrigger className="block w-full rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
-                    <div className="grid grid-cols-[minmax(0,1fr)_86px] items-start gap-3 rounded-md px-2 py-2 transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 data-[state=open]:bg-muted/50">
+                    <button
+                      type="button"
+                      className="grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_86px] items-start gap-3 rounded-md px-2 py-2 text-left transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 focus-visible:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring/30 data-[state=open]:bg-muted/50"
+                      onClick={() => openExternalUrl(item.url)}
+                      onKeyDown={(event) =>
+                        handleRowKeyDown(event, () => openExternalUrl(item.url))
+                      }
+                      onMouseEnter={(event) => event.currentTarget.focus({ preventScroll: true })}
+                    >
                       <div className="flex min-w-0 items-start gap-2.5">
                         <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground">
                           {item.type === "pulls" ? (
@@ -1753,14 +2314,9 @@ function AppIndex() {
                           )}
                         </span>
                         <div className="min-w-0">
-                          <a
-                            href={item.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="block truncate text-sm text-foreground hover:underline"
-                          >
+                          <span className="block truncate text-sm text-foreground">
                             {item.title}
-                          </a>
+                          </span>
                           {search.trim() ? (
                             <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
                               <span className="truncate text-xs text-muted-foreground">
@@ -1775,20 +2331,25 @@ function AppIndex() {
                       </div>
                       <p className="pt-0.5 text-right text-xs text-muted-foreground">
                         {item.updatedAt || item.createdAt
-                          ? new Date(item.updatedAt ?? item.createdAt ?? "").toLocaleDateString(undefined, {
-                              month: "short",
-                              day: "numeric",
-                            })
+                          ? new Date(item.updatedAt ?? item.createdAt ?? "").toLocaleDateString(
+                              undefined,
+                              {
+                                month: "short",
+                                day: "numeric",
+                              },
+                            )
                           : ""}
                       </p>
-                    </div>
+                    </button>
                   </ContextMenuTrigger>
                   <ContextMenuContent className="min-w-44 rounded-lg p-1">
                     <ContextMenuItem onClick={() => void copyBookmarkUrl(item.url)}>
                       <ClipboardIcon />
                       Copy URL
                     </ContextMenuItem>
-                    <ContextMenuItem onClick={() => window.open(item.url, "_blank", "noopener,noreferrer")}>
+                    <ContextMenuItem
+                      onClick={() => window.open(item.url, "_blank", "noopener,noreferrer")}
+                    >
                       <ExternalLinkIcon />
                       Open on GitHub
                     </ContextMenuItem>
@@ -1800,28 +2361,37 @@ function AppIndex() {
           {!isLoadingRows &&
             !isXFolderSelected &&
             !isGitHubFolderSelected &&
-            displayedVisibleRows.map((item) => {
+            virtualDisplayedVisibleRows.map((item) => {
               const isLink = item.contentType === "link";
               const host = isLink ? getHostFromUrl(item.url) : "";
-              const displayTitle = item.title || (isLink ? getDisplayLabelFromUrl(item.url) : item.url);
+              const redditSubreddit = isLink ? getRedditSubredditFromUrl(item.url) : "";
+              const displayTitle =
+                item.title || (isLink ? getDisplayLabelFromUrl(item.url) : item.url);
+              const rowTitle = redditSubreddit
+                ? `${redditSubreddit} / ${displayTitle}`
+                : displayTitle;
               const isSearching = Boolean(search.trim());
+              const secondaryLabel = isSearching ? host || item.tag : "";
               const showMatchScore =
-                searchMode === "semantic" &&
-                isSearching &&
-                typeof item.matchScore === "number";
+                searchMode === "semantic" && isSearching && typeof item.matchScore === "number";
               const primaryFaviconUrl = host ? `https://icons.duckduckgo.com/ip3/${host}.ico` : "";
               const fallbackFaviconUrl = host
                 ? `https://www.google.com/s2/favicons?sz=64&domain=${encodeURIComponent(host)}`
                 : "";
 
               return (
-                <li
-                  key={item.id}
-                  className="py-1"
-                >
+                <li key={item.id} className="py-1">
                   <ContextMenu>
                     <ContextMenuTrigger className="block w-full rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
-                      <div className="grid grid-cols-[minmax(0,1fr)_86px] items-start gap-3 rounded-md px-2 py-2 transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 data-[state=open]:bg-muted/50">
+                      <button
+                        type="button"
+                        className="grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_86px] items-start gap-3 rounded-md px-2 py-2 text-left transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 focus-visible:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring/30 data-[state=open]:bg-muted/50"
+                        onClick={() => activateBookmarkRow(item)}
+                        onKeyDown={(event) =>
+                          handleRowKeyDown(event, () => activateBookmarkRow(item))
+                        }
+                        onMouseEnter={(event) => event.currentTarget.focus({ preventScroll: true })}
+                      >
                         <div className="flex min-w-0 items-start gap-2.5">
                           {isLink && host ? (
                             <img
@@ -1852,32 +2422,27 @@ function AppIndex() {
                           )}
                           <div className="min-w-0">
                             {isLink ? (
-                              <a
-                                href={item.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="block truncate text-sm text-foreground hover:underline"
-                              >
-                                {displayTitle}
-                              </a>
+                              <span className="block truncate text-sm text-foreground">
+                                {rowTitle}
+                              </span>
                             ) : (
-                              <button
-                                type="button"
-                                className="block max-w-full truncate text-left text-sm text-foreground hover:underline"
-                                onClick={() => void copyBookmarkUrl(item.url)}
-                              >
-                                {displayTitle}
-                              </button>
+                              <span className="block max-w-full truncate text-sm text-foreground">
+                                {rowTitle}
+                              </span>
                             )}
-                            {isSearching ? (
+                            {secondaryLabel || showMatchScore ? (
                               <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
-                                <span className="truncate text-xs text-muted-foreground">
-                                  {host || item.tag}
-                                </span>
+                                {secondaryLabel ? (
+                                  <span className="truncate text-xs text-muted-foreground">
+                                    {secondaryLabel}
+                                  </span>
+                                ) : null}
                                 {showMatchScore ? (
                                   <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-full border bg-muted/60 px-2 text-[11px] font-medium text-muted-foreground">
                                     <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                                    {item.matchScore === 100 ? "best match" : `${item.matchScore}% match`}
+                                    {item.matchScore === 100
+                                      ? "best match"
+                                      : `${item.matchScore}% match`}
                                   </span>
                                 ) : null}
                               </div>
@@ -1890,7 +2455,7 @@ function AppIndex() {
                             day: "numeric",
                           })}
                         </p>
-                      </div>
+                      </button>
                     </ContextMenuTrigger>
                     <ContextMenuContent className="min-w-44 rounded-lg p-1">
                       <ContextMenuItem onClick={() => void copyBookmarkUrl(item.url)}>
@@ -1914,39 +2479,45 @@ function AppIndex() {
                           Open Link
                         </ContextMenuItem>
                       ) : null}
-                      <ContextMenuItem
-                        disabled={refetchBookmarkMetadataMutation.isPending}
-                        onClick={() => refetchBookmarkMetadataMutation.mutate(item.id)}
-                      >
-                        {refetchBookmarkMetadataMutation.isPending ? (
-                          <Loader2Icon className="size-4 animate-spin" />
-                        ) : (
-                          <RefreshCwIcon />
-                        )}
-                        Refetch metadata
-                      </ContextMenuItem>
+                      {isLink ? (
+                        <ContextMenuItem
+                          disabled={refetchBookmarkMetadataMutation.isPending}
+                          onClick={() => refetchBookmarkMetadataMutation.mutate(item.id)}
+                        >
+                          {refetchBookmarkMetadataMutation.isPending ? (
+                            <Loader2Icon className="size-4 animate-spin" />
+                          ) : (
+                            <RefreshCwIcon />
+                          )}
+                          Refetch metadata
+                        </ContextMenuItem>
+                      ) : null}
                       <ContextMenuSeparator />
                       <ContextMenuItem disabled>
                         <CheckSquareIcon />
                         Select
                       </ContextMenuItem>
-                      <ContextMenuItem
+                      <HoldToDelete
+                        mode="menu-item"
                         disabled={deleteBookmarkMutation.isPending}
-                        variant="destructive"
-                        onClick={() => deleteBookmarkMutation.mutate(item.id)}
+                        isPending={deleteBookmarkMutation.isPending}
+                        onDelete={() => deleteBookmarkMutation.mutate(item.id)}
                       >
-                        {deleteBookmarkMutation.isPending ? (
-                          <Loader2Icon className="size-4 animate-spin" />
-                        ) : (
-                          <Trash2Icon />
-                        )}
                         Delete
-                      </ContextMenuItem>
+                      </HoldToDelete>
                     </ContextMenuContent>
                   </ContextMenu>
                 </li>
               );
             })}
+
+          {!isLoadingRows && displayedRowCount > 0 && virtualPaddingBottom > 0 ? (
+            <li
+              aria-hidden="true"
+              className="pointer-events-none border-0"
+              style={{ height: virtualPaddingBottom }}
+            />
+          ) : null}
 
           {!isLoadingRows && hasMoreRows ? (
             <li ref={loadMoreRef} className="flex justify-center px-2 py-4">

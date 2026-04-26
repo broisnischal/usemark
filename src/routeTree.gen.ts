@@ -13,6 +13,7 @@ import { Route as GuestRouteRouteImport } from './routes/_guest/route'
 import { Route as AuthRouteRouteImport } from './routes/_auth/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiUploadthingRouteImport } from './routes/api/uploadthing'
+import { Route as ApiProfileRouteImport } from './routes/api/profile'
 import { Route as ApiInngestRouteImport } from './routes/api/inngest'
 import { Route as ApiBookmarksRouteImport } from './routes/api/bookmarks'
 import { Route as ApiBookmarkFoldersRouteImport } from './routes/api/bookmark-folders'
@@ -27,6 +28,7 @@ import { Route as ApiGithubItemsRouteImport } from './routes/api/github/items'
 import { Route as ApiBookmarksSearchRouteImport } from './routes/api/bookmarks.search'
 import { Route as ApiBookmarksAskRouteImport } from './routes/api/bookmarks.ask'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as AuthAppProfileRouteImport } from './routes/_auth/app/profile'
 
 const GuestRouteRoute = GuestRouteRouteImport.update({
   id: '/_guest',
@@ -44,6 +46,11 @@ const IndexRoute = IndexRouteImport.update({
 const ApiUploadthingRoute = ApiUploadthingRouteImport.update({
   id: '/api/uploadthing',
   path: '/api/uploadthing',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiProfileRoute = ApiProfileRouteImport.update({
+  id: '/api/profile',
+  path: '/api/profile',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiInngestRoute = ApiInngestRouteImport.update({
@@ -116,6 +123,11 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthAppProfileRoute = AuthAppProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
+  getParentRoute: () => AuthAppRouteRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -125,7 +137,9 @@ export interface FileRoutesByFullPath {
   '/api/bookmark-folders': typeof ApiBookmarkFoldersRoute
   '/api/bookmarks': typeof ApiBookmarksRouteWithChildren
   '/api/inngest': typeof ApiInngestRoute
+  '/api/profile': typeof ApiProfileRoute
   '/api/uploadthing': typeof ApiUploadthingRoute
+  '/app/profile': typeof AuthAppProfileRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/bookmarks/ask': typeof ApiBookmarksAskRoute
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
@@ -142,7 +156,9 @@ export interface FileRoutesByTo {
   '/api/bookmark-folders': typeof ApiBookmarkFoldersRoute
   '/api/bookmarks': typeof ApiBookmarksRouteWithChildren
   '/api/inngest': typeof ApiInngestRoute
+  '/api/profile': typeof ApiProfileRoute
   '/api/uploadthing': typeof ApiUploadthingRoute
+  '/app/profile': typeof AuthAppProfileRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/bookmarks/ask': typeof ApiBookmarksAskRoute
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
@@ -163,7 +179,9 @@ export interface FileRoutesById {
   '/api/bookmark-folders': typeof ApiBookmarkFoldersRoute
   '/api/bookmarks': typeof ApiBookmarksRouteWithChildren
   '/api/inngest': typeof ApiInngestRoute
+  '/api/profile': typeof ApiProfileRoute
   '/api/uploadthing': typeof ApiUploadthingRoute
+  '/_auth/app/profile': typeof AuthAppProfileRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/bookmarks/ask': typeof ApiBookmarksAskRoute
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
@@ -183,7 +201,9 @@ export interface FileRouteTypes {
     | '/api/bookmark-folders'
     | '/api/bookmarks'
     | '/api/inngest'
+    | '/api/profile'
     | '/api/uploadthing'
+    | '/app/profile'
     | '/api/auth/$'
     | '/api/bookmarks/ask'
     | '/api/bookmarks/search'
@@ -200,7 +220,9 @@ export interface FileRouteTypes {
     | '/api/bookmark-folders'
     | '/api/bookmarks'
     | '/api/inngest'
+    | '/api/profile'
     | '/api/uploadthing'
+    | '/app/profile'
     | '/api/auth/$'
     | '/api/bookmarks/ask'
     | '/api/bookmarks/search'
@@ -220,7 +242,9 @@ export interface FileRouteTypes {
     | '/api/bookmark-folders'
     | '/api/bookmarks'
     | '/api/inngest'
+    | '/api/profile'
     | '/api/uploadthing'
+    | '/_auth/app/profile'
     | '/api/auth/$'
     | '/api/bookmarks/ask'
     | '/api/bookmarks/search'
@@ -238,6 +262,7 @@ export interface RootRouteChildren {
   ApiBookmarkFoldersRoute: typeof ApiBookmarkFoldersRoute
   ApiBookmarksRoute: typeof ApiBookmarksRouteWithChildren
   ApiInngestRoute: typeof ApiInngestRoute
+  ApiProfileRoute: typeof ApiProfileRoute
   ApiUploadthingRoute: typeof ApiUploadthingRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiGithubItemsRoute: typeof ApiGithubItemsRoute
@@ -274,6 +299,13 @@ declare module '@tanstack/react-router' {
       path: '/api/uploadthing'
       fullPath: '/api/uploadthing'
       preLoaderRoute: typeof ApiUploadthingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/profile': {
+      id: '/api/profile'
+      path: '/api/profile'
+      fullPath: '/api/profile'
+      preLoaderRoute: typeof ApiProfileRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/inngest': {
@@ -374,14 +406,23 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_auth/app/profile': {
+      id: '/_auth/app/profile'
+      path: '/profile'
+      fullPath: '/app/profile'
+      preLoaderRoute: typeof AuthAppProfileRouteImport
+      parentRoute: typeof AuthAppRouteRoute
+    }
   }
 }
 
 interface AuthAppRouteRouteChildren {
+  AuthAppProfileRoute: typeof AuthAppProfileRoute
   AuthAppIndexRoute: typeof AuthAppIndexRoute
 }
 
 const AuthAppRouteRouteChildren: AuthAppRouteRouteChildren = {
+  AuthAppProfileRoute: AuthAppProfileRoute,
   AuthAppIndexRoute: AuthAppIndexRoute,
 }
 
@@ -436,6 +477,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiBookmarkFoldersRoute: ApiBookmarkFoldersRoute,
   ApiBookmarksRoute: ApiBookmarksRouteWithChildren,
   ApiInngestRoute: ApiInngestRoute,
+  ApiProfileRoute: ApiProfileRoute,
   ApiUploadthingRoute: ApiUploadthingRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiGithubItemsRoute: ApiGithubItemsRoute,

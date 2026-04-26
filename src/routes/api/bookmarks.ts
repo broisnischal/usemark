@@ -24,7 +24,9 @@ export const Route = createFileRoute("/api/bookmarks")({
           return Response.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        const bookmarks = await listBookmarksForUser(userId);
+        const requestUrl = new URL(request.url);
+        const folderId = requestUrl.searchParams.get("folderId");
+        const bookmarks = await listBookmarksForUser(userId, { folderId });
         return Response.json(bookmarks);
       },
       POST: async ({ request }) => {

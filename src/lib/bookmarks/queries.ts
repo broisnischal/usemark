@@ -7,6 +7,9 @@ export const bookmarkFoldersQueryKey = ["bookmark-folders"] as const;
 export const xBookmarksQueryKey = ["x-bookmarks"] as const;
 export const githubItemsQueryKey = ["github-items"] as const;
 
+const FOLDER_DATA_STALE_TIME = 60_000;
+const FOLDER_DATA_GC_TIME = 15 * 60_000;
+
 export interface XBookmarkRecord {
   id: string;
   url: string;
@@ -51,13 +54,19 @@ async function readJson<T>(response: Response) {
   return (await response.json()) as T;
 }
 
-export const bookmarksQueryOptions = () =>
+export const bookmarksQueryOptions = (folderId: string | null | undefined, enabled = true) =>
   queryOptions({
-    queryKey: bookmarksQueryKey,
-    staleTime: 15_000,
-    gcTime: 5 * 60_000,
+    queryKey: [...bookmarksQueryKey, "list", folderId ?? "all"] as const,
+    enabled,
+    staleTime: FOLDER_DATA_STALE_TIME,
+    gcTime: FOLDER_DATA_GC_TIME,
     queryFn: async ({ signal }) => {
-      const response = await fetch("/api/bookmarks", {
+      const params = new URLSearchParams();
+      if (folderId) {
+        params.set("folderId", folderId);
+      }
+      const queryString = params.toString();
+      const response = await fetch(`/api/bookmarks${queryString ? `?${queryString}` : ""}`, {
         method: "GET",
         signal,
       });
@@ -87,8 +96,8 @@ export const bookmarkSearchQueryOptions = (query: string) =>
 export const bookmarkFoldersQueryOptions = () =>
   queryOptions({
     queryKey: bookmarkFoldersQueryKey,
-    staleTime: 30_000,
-    gcTime: 5 * 60_000,
+    staleTime: FOLDER_DATA_STALE_TIME,
+    gcTime: FOLDER_DATA_GC_TIME,
     queryFn: async ({ signal }) => {
       const response = await fetch("/api/bookmark-folders", {
         method: "GET",
@@ -103,8 +112,8 @@ export const xBookmarksQueryOptions = (enabled: boolean) =>
     queryKey: xBookmarksQueryKey,
     enabled,
     retry: false,
-    staleTime: 30_000,
-    gcTime: 5 * 60_000,
+    staleTime: FOLDER_DATA_STALE_TIME,
+    gcTime: FOLDER_DATA_GC_TIME,
     queryFn: async ({ signal }) => {
       const response = await fetch("/api/x/bookmarks", {
         method: "GET",
@@ -123,13 +132,16 @@ export const githubItemsQueryOptions = (folderId: string | null | undefined) =>
     queryKey: [...githubItemsQueryKey, folderId ?? ""] as const,
     enabled: Boolean(folderId),
     retry: false,
-    staleTime: 30_000,
-    gcTime: 5 * 60_000,
+    staleTime: FOLDER_DATA_STALE_TIME,
+    gcTime: FOLDER_DATA_GC_TIME,
     queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/github/items?folderId=${encodeURIComponent(folderId ?? "")}`, {
-        method: "GET",
-        signal,
-      });
+      const response = await fetch(
+        `/api/github/items?folderId=${encodeURIComponent(folderId ?? "")}`,
+        {
+          method: "GET",
+          signal,
+        },
+      );
       const data = (await response.json()) as GitHubItemsResponse;
       if (!response.ok && data.error) {
         return data;

@@ -38,14 +38,20 @@ export const Route = createFileRoute("/api/x/callback")({
         headers.append("Set-Cookie", clearCookie("x_oauth_state"));
         headers.append("Set-Cookie", clearCookie("x_oauth_verifier"));
 
-        if (!code || !state || !cookieState || state !== decodeURIComponent(cookieState) || !codeVerifier) {
+        if (
+          !code ||
+          !state ||
+          !cookieState ||
+          state !== decodeURIComponent(cookieState) ||
+          !codeVerifier
+        ) {
           headers.set("Location", "/app?x=failed");
           return new Response(null, { status: 302, headers });
         }
 
         try {
           await connectXAccountForUser(userId, code, decodeURIComponent(codeVerifier));
-          headers.set("Location", "/app?x=connected");
+          headers.set("Location", "/app/profile?x=connected");
         } catch {
           headers.set("Location", "/app?x=failed");
         }
