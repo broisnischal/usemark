@@ -4,6 +4,44 @@ import type { BookmarkFolderRecord, BookmarkRecord } from "./functions";
 
 export const bookmarksQueryKey = ["bookmarks"] as const;
 export const bookmarkFoldersQueryKey = ["bookmark-folders"] as const;
+export const xBookmarksQueryKey = ["x-bookmarks"] as const;
+export const githubItemsQueryKey = ["github-items"] as const;
+
+export interface XBookmarkRecord {
+  id: string;
+  url: string;
+  title: string;
+  authorName: string | null;
+  username: string | null;
+  createdAt: string | null;
+}
+
+export interface XBookmarksResponse {
+  connected: boolean;
+  bookmarks: XBookmarkRecord[];
+  error?: string;
+  status?: number;
+  detail?: string;
+}
+
+export interface GitHubItemRecord {
+  id: string;
+  url: string;
+  title: string;
+  type: "all" | "issues" | "pulls" | "releases";
+  state: string | null;
+  author: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface GitHubItemsResponse {
+  connected: boolean;
+  items: GitHubItemRecord[];
+  error?: string;
+  status?: number;
+  detail?: string;
+}
 
 async function readJson<T>(response: Response) {
   if (!response.ok) {
@@ -57,5 +95,45 @@ export const bookmarkFoldersQueryOptions = () =>
         signal,
       });
       return readJson<BookmarkFolderRecord[]>(response);
+    },
+  });
+
+export const xBookmarksQueryOptions = (enabled: boolean) =>
+  queryOptions({
+    queryKey: xBookmarksQueryKey,
+    enabled,
+    retry: false,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    queryFn: async ({ signal }) => {
+      const response = await fetch("/api/x/bookmarks", {
+        method: "GET",
+        signal,
+      });
+      const data = (await response.json()) as XBookmarksResponse;
+      if (!response.ok && data.error) {
+        return data;
+      }
+      return data;
+    },
+  });
+
+export const githubItemsQueryOptions = (folderId: string | null | undefined) =>
+  queryOptions({
+    queryKey: [...githubItemsQueryKey, folderId ?? ""] as const,
+    enabled: Boolean(folderId),
+    retry: false,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    queryFn: async ({ signal }) => {
+      const response = await fetch(`/api/github/items?folderId=${encodeURIComponent(folderId ?? "")}`, {
+        method: "GET",
+        signal,
+      });
+      const data = (await response.json()) as GitHubItemsResponse;
+      if (!response.ok && data.error) {
+        return data;
+      }
+      return data;
     },
   });

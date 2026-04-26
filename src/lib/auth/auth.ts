@@ -1,5 +1,5 @@
-import "@tanstack/react-start/server-only";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
+import "@tanstack/react-start/server-only";
 import { betterAuth } from "better-auth/minimal";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 
@@ -16,6 +16,12 @@ export const auth = betterAuth({
     provider: "sqlite",
     schema,
   }),
+  account: {
+accountLinking: {
+  enabled: true,
+  trustedProviders: ["github", "google"],
+}
+  },
 
   // https://www.better-auth.com/docs/integrations/tanstack#usage-tips
   plugins: [tanstackStartCookies()],
@@ -24,7 +30,7 @@ export const auth = betterAuth({
   session: {
     cookieCache: {
       enabled: true,
-      maxAge: 5 * 60, // 5 minutes
+      maxAge: 5 * 60, // 5 minutes 
     },
   },
 
@@ -33,6 +39,7 @@ export const auth = betterAuth({
     github: {
       clientId: env.GITHUB_CLIENT_ID!,
       clientSecret: env.GITHUB_CLIENT_SECRET!,
+      // scope: ["user:email", "repo", "read:org"],
     },
     google: {
       clientId: env.GOOGLE_CLIENT_ID!,

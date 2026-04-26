@@ -73,3 +73,30 @@ export const bookmark = sqliteTable(
     index("bookmark_user_created_at_idx").on(table.userId, table.createdAt),
   ],
 );
+
+export const xConnection = sqliteTable(
+  "x_connection",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    xUserId: text("x_user_id").notNull(),
+    username: text("username"),
+    accessToken: text("access_token").notNull(),
+    refreshToken: text("refresh_token"),
+    scope: text("scope"),
+    accessTokenExpiresAt: integer("access_token_expires_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(defaultTimestampMs)
+      .notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .default(defaultTimestampMs)
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("x_connection_user_id_idx").on(table.userId),
+    index("x_connection_x_user_id_idx").on(table.xUserId),
+  ],
+);

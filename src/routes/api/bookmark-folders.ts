@@ -12,6 +12,11 @@ import {
   syncRssBookmarkFolder,
   type BookmarkFolderSourceType,
 } from "@/lib/bookmarks/functions";
+import {
+  normalizeGitHubRepo,
+  normalizeGitHubResourceType,
+  toGitHubExternalResourceId,
+} from "@/lib/bookmarks/github";
 import { inngest } from "@/lib/inngest/client";
 
 function normalizeSourceType(value: string | undefined): BookmarkFolderSourceType {
@@ -78,12 +83,24 @@ export const Route = createFileRoute("/api/bookmark-folders")({
           name = await fetchRssChannelName(feedUrl);
         }
 
+        let externalResourceId = feedUrl || payload.externalResourceId?.trim() || null;
+        if (sourceType === "github") {
+          const repo = normalizeGitHubRepo(payload.externalResourceId ?? "");
+          if (!repo) {
+            return Response.json({ error: "Enter a GitHub repository as owner/repo." }, { status: 400 });
+          }
+
+          const resourceType = normalizeGitHubResourceType(payload.name);
+          externalResourceId = toGitHubExternalResourceId(repo, resourceType);
+          name = `${repo} ${resourceType}`;
+        }
+
         const folder = await createBookmarkFolderForUser(userId, {
           name,
           sourceType,
           syncEnabled: payload.syncEnabled ?? sourceType !== "local",
           externalAccountId: payload.externalAccountId ?? null,
-          externalResourceId: feedUrl || null,
+          externalResourceId,
         });
 
         if (folder.sourceType === "rss") {
@@ -135,6 +152,52 @@ export const Route = createFileRoute("/api/bookmark-folders")({
           }
 
           return Response.json({ success: true, id: folderId });
+        }
+
+        if (payload.action === "sync") {
+          const folders = await listBookmarkFoldersForUser(userId);
+          const folder = folders.find((item) => item.id === folderId);
+          if (!folder) {
+            return Response.json({ error: "Folder not found." }, { status: 404 });
+          }
+
+          if (folder.sourceType === "local") {
+            return Response.json({ error: "Manual folders do not have an external source to sync." }, { status: 400 });
+          }
+
+          if (folder.sourceType === "rss") {
+            try {
+              await inngest.send({
+                id: `rss-folder-sync-${folder.id}-${Date.now()}`,
+                name: "bookmark-folder/rss.sync.requested",
+                data: {
+                  folderId: folder.id,
+                  userId,
+                },
+              });
+            } catch {
+              void syncRssBookmarkFolder(folder.id)
+                .then(async (result) => {
+                  await Promise.all(result.bookmarkIds.map((bookmarkId) => processBookmarkEmbedding(bookmarkId)));
+                })
+                .catch(() => {});
+            }
+
+            return Response.json({ success: true, id: folderId, sourceType: folder.sourceType });
+          }
+
+          if (folder.sourceType === "x") {
+            return Response.json({ success: true, id: folderId, sourceType: folder.sourceType });
+          }
+
+          if (folder.sourceType === "github") {
+            return Response.json({ success: true, id: folderId, sourceType: folder.sourceType });
+          }
+
+          return Response.json(
+            { error: `${folder.sourceType} folder sync is not available yet.` },
+            { status: 400 },
+          );
         }
 
         return Response.json({ error: "Unsupported action." }, { status: 400 });

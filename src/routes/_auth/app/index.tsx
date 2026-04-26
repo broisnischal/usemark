@@ -8,6 +8,7 @@ import {
   ExternalLinkIcon,
   FileTextIcon,
   FolderIcon,
+  GitPullRequestIcon,
   Loader2Icon,
   PencilIcon,
   PinIcon,
@@ -45,6 +46,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { authClient } from "@/lib/auth/auth-client";
 import type {
   BookmarkContentType,
   BookmarkFolderRecord,
@@ -57,6 +59,10 @@ import {
   bookmarkSearchQueryOptions,
   bookmarksQueryKey,
   bookmarksQueryOptions,
+  githubItemsQueryKey,
+  githubItemsQueryOptions,
+  xBookmarksQueryKey,
+  xBookmarksQueryOptions,
 } from "@/lib/bookmarks/queries";
 
 export const Route = createFileRoute("/_auth/app/")({
@@ -64,8 +70,10 @@ export const Route = createFileRoute("/_auth/app/")({
 });
 
 const BOOKMARK_INPUT_DEBOUNCE_MS = 300;
+const ROW_PAGE_SIZE = 40;
 
 type BookmarkSearchMode = "semantic" | "exact";
+type GitHubResourceType = "all" | "issues" | "pulls" | "releases";
 
 const LIVE_FOLDER_OPTIONS: Array<{
   sourceType: BookmarkFolderSourceType;
@@ -121,6 +129,49 @@ function normalizeBookmarkContent(value: string) {
   } catch {
     return { content: `https://${trimmed}`, contentType };
   }
+}
+
+function normalizeGitHubRepoInput(value: string) {
+  const normalized = value
+    .trim()
+    .replace(/^https:\/\/github\.com\//i, "")
+    .replace(/^github\.com\//i, "")
+    .replace(/\.git$/i, "");
+  const [owner, repo] = normalized.split("/").filter(Boolean);
+
+  return owner && repo ? `${owner}/${repo}` : null;
+}
+
+function normalizeGitHubResourceTypeInput(value: string | undefined): GitHubResourceType {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "issue" || normalized === "issues") {
+    return "issues";
+  }
+  if (normalized === "pr" || normalized === "prs" || normalized === "pull" || normalized === "pulls") {
+    return "pulls";
+  }
+  if (normalized === "release" || normalized === "releases") {
+    return "releases";
+  }
+
+  return "all";
+}
+
+function parseGitHubFolderCommand(value: string) {
+  const match = value.trim().match(/^(?:gh|github)\s+(?:folder\s+)?(\S+)(?:\s+(\S+))?$/i);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  const repo = normalizeGitHubRepoInput(match[1]);
+  if (!repo) {
+    return null;
+  }
+
+  return {
+    repo,
+    resourceType: normalizeGitHubResourceTypeInput(match[2]),
+  };
 }
 
 function getHostFromUrlValue(urlValue: string) {
@@ -231,11 +282,19 @@ function AppIndex() {
   const [addFolderId, setAddFolderId] = React.useState<string | null>(null);
   const [searchMode, setSearchMode] = React.useState<BookmarkSearchMode>("semantic");
   const [isRssFolderDialogOpen, setIsRssFolderDialogOpen] = React.useState(false);
+  const [isGitHubFolderDialogOpen, setIsGitHubFolderDialogOpen] = React.useState(false);
   const [isCustomFolderDialogOpen, setIsCustomFolderDialogOpen] = React.useState(false);
   const [renamingBookmark, setRenamingBookmark] = React.useState<BookmarkRecord | null>(null);
   const [rssFeedUrl, setRssFeedUrl] = React.useState("");
+  const [githubRepoValue, setGithubRepoValue] = React.useState("");
+  const [githubResourceType, setGithubResourceType] = React.useState<GitHubResourceType>("all");
   const [customFolderName, setCustomFolderName] = React.useState("");
   const [bookmarkTitleValue, setBookmarkTitleValue] = React.useState("");
+  const [rowPagination, setRowPagination] = React.useState({
+    scope: "",
+    limit: ROW_PAGE_SIZE,
+  });
+  const loadMoreRef = React.useRef<HTMLLIElement | null>(null);
   const debouncedInputValue = useDebouncedValue(inputValue, BOOKMARK_INPUT_DEBOUNCE_MS);
   const search = inputValue.trim() ? debouncedInputValue.trim() : "";
 
@@ -246,6 +305,15 @@ function AppIndex() {
     enabled: searchMode === "semantic" && Boolean(search.trim()),
     placeholderData: (previousData) => previousData,
   });
+  const xBookmarksQuery = useQuery(
+    xBookmarksQueryOptions(Boolean(foldersQuery.data?.some((folder) => folder.sourceType === "x"))),
+  );
+  const queryPinnedFolder = foldersQuery.data?.find((folder) => folder.isPinned) ?? null;
+  const queryActiveFolderId = selectedFolderId === undefined ? queryPinnedFolder?.id ?? null : selectedFolderId;
+  const queryActiveFolder = foldersQuery.data?.find((folder) => folder.id === queryActiveFolderId) ?? null;
+  const githubItemsQuery = useQuery(
+    githubItemsQueryOptions(queryActiveFolder?.sourceType === "github" ? queryActiveFolder.id : null),
+  );
 
   const getTagFromUrl = React.useCallback((urlValue: string) => {
     const normalizedContent = normalizeBookmarkContent(urlValue);
@@ -530,6 +598,22 @@ function AppIndex() {
     },
   });
 
+  const connectGitHubMutation = useMutation({
+    mutationFn: async () =>
+      await authClient.linkSocial(
+        {
+          provider: "github",
+          scopes: ["repo", "read:org", "user:email"],
+          callbackURL: "/app",
+        },
+        {
+          onError: ({ error }) => {
+            toast.error(error.message || "Could not connect GitHub.");
+          },
+        },
+      ),
+  });
+
   const createLiveFolderMutation = useMutation({
     mutationFn: async (payload: {
       name: string;
@@ -597,8 +681,11 @@ function AppIndex() {
           : `${getFolderSourceLabel(folder.sourceType)} folder added.`,
       );
       setIsRssFolderDialogOpen(false);
+      setIsGitHubFolderDialogOpen(false);
       setIsCustomFolderDialogOpen(false);
       setRssFeedUrl("");
+      setGithubRepoValue("");
+      setGithubResourceType("all");
       setCustomFolderName("");
       if (folder.sourceType === "local") {
         setAddFolderId(folder.id);
@@ -688,6 +775,68 @@ function AppIndex() {
     },
   });
 
+  const syncFolderMutation = useMutation({
+    mutationFn: async (folderId: string) => {
+      const response = await fetch("/api/bookmark-folders", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ id: folderId, action: "sync" }),
+      });
+
+      if (!response.ok) {
+        const errorBody = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(
+          response.status === 401
+            ? "Please sign in."
+            : errorBody?.error || "Could not sync folder.",
+        );
+      }
+
+      return (await response.json()) as {
+        success: true;
+        id: string;
+        sourceType: BookmarkFolderSourceType;
+      };
+    },
+    onMutate: async (folderId) => {
+      await queryClient.cancelQueries({ queryKey: bookmarkFoldersQueryKey });
+      const previousFolders = queryClient.getQueryData<BookmarkFolderRecord[]>(bookmarkFoldersQueryKey);
+
+      queryClient.setQueryData(bookmarkFoldersQueryKey, (currentFolders: BookmarkFolderRecord[] | undefined) =>
+        currentFolders?.map((folder) =>
+          folder.id === folderId ? { ...folder, lastSyncedAt: new Date().toISOString() } : folder,
+        ),
+      );
+
+      return { previousFolders };
+    },
+    onSuccess: async (result) => {
+      toast.success(result.sourceType === "rss" ? "RSS sync started." : "Folder refreshed.");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: bookmarkFoldersQueryKey }),
+        result.sourceType === "rss"
+          ? queryClient.invalidateQueries({ queryKey: bookmarksQueryKey })
+          : Promise.resolve(),
+        result.sourceType === "rss"
+          ? queryClient.invalidateQueries({ queryKey: ["bookmarks", "search"] })
+          : Promise.resolve(),
+        result.sourceType === "x"
+          ? queryClient.invalidateQueries({ queryKey: xBookmarksQueryKey })
+          : Promise.resolve(),
+        result.sourceType === "github"
+          ? queryClient.invalidateQueries({ queryKey: githubItemsQueryKey })
+          : Promise.resolve(),
+      ]);
+    },
+    onError: (error, _folderId, context) => {
+      queryClient.setQueryData(bookmarkFoldersQueryKey, context?.previousFolders);
+      const message = error instanceof Error ? error.message : "Could not sync folder.";
+      toast.error(message);
+    },
+  });
+
   const deleteFolderMutation = useMutation({
     mutationFn: async (folderId: string) => {
       const response = await fetch("/api/bookmark-folders", {
@@ -769,6 +918,18 @@ function AppIndex() {
     if (!nextUrl) {
       return;
     }
+
+    const githubFolderCommand = parseGitHubFolderCommand(nextUrl);
+    if (githubFolderCommand) {
+      setInputValue("");
+      createLiveFolderMutation.mutate({
+        name: githubFolderCommand.resourceType,
+        sourceType: "github",
+        externalResourceId: githubFolderCommand.repo,
+      });
+      return;
+    }
+
     setInputValue("");
     createBookmarkMutation.mutate({
       url: nextUrl,
@@ -788,6 +949,20 @@ function AppIndex() {
       name: "",
       sourceType: "rss",
       externalResourceId: feedUrl,
+    });
+  };
+
+  const submitGitHubFolder = (event: React.SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const repo = githubRepoValue.trim();
+    if (!repo) {
+      return;
+    }
+
+    createLiveFolderMutation.mutate({
+      name: githubResourceType,
+      sourceType: "github",
+      externalResourceId: repo,
     });
   };
 
@@ -826,6 +1001,8 @@ function AppIndex() {
   const pinnedFolder = folders.find((folder) => folder.isPinned) ?? null;
   const activeFolderId = selectedFolderId === undefined ? pinnedFolder?.id ?? null : selectedFolderId;
   const selectedFolder = folders.find((folder) => folder.id === activeFolderId) ?? null;
+  const isXFolderSelected = selectedFolder?.sourceType === "x";
+  const isGitHubFolderSelected = selectedFolder?.sourceType === "github";
   const defaultFolder = manualFolders.find((folder) => folder.name === "default") ?? null;
   const addFolder =
     manualFolders.find((folder) => folder.id === addFolderId) ??
@@ -833,16 +1010,92 @@ function AppIndex() {
     defaultFolder ??
     manualFolders[0] ??
     null;
-  const visibleRows = activeFolderId
-    ? fetchedRows.filter((row) => row.folderId === activeFolderId)
-    : fetchedRows;
+  const visibleRows = isXFolderSelected || isGitHubFolderSelected
+    ? []
+    : activeFolderId
+      ? fetchedRows.filter((row) => row.folderId === activeFolderId)
+      : fetchedRows;
+  const xRows = (xBookmarksQuery.data?.bookmarks ?? []).filter((row) => {
+    const normalizedSearch = search.trim().toLowerCase();
+    if (!isXFolderSelected || !normalizedSearch) {
+      return true;
+    }
+
+    return [row.title, row.authorName ?? "", row.username ?? ""]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalizedSearch);
+  });
+  const githubRows = (githubItemsQuery.data?.items ?? []).filter((row) => {
+    const normalizedSearch = search.trim().toLowerCase();
+    if (!isGitHubFolderSelected || !normalizedSearch) {
+      return true;
+    }
+
+    return [row.title, row.author ?? "", row.state ?? "", row.type]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalizedSearch);
+  });
   const liveFolderSourceTypes = new Set(
     folders.filter((folder) => folder.sourceType !== "local").map((folder) => folder.sourceType),
   );
   const isLoadingRows =
-    search.trim() && searchMode === "semantic" ? searchQuery.isLoading : bookmarksQuery.isLoading;
+    isXFolderSelected
+      ? xBookmarksQuery.isLoading
+      : isGitHubFolderSelected
+        ? githubItemsQuery.isLoading
+        : search.trim() && searchMode === "semantic" ? searchQuery.isLoading : bookmarksQuery.isLoading;
   const isRefreshingRows =
-    search.trim() && searchMode === "semantic" ? searchQuery.isFetching : bookmarksQuery.isFetching;
+    isXFolderSelected
+      ? xBookmarksQuery.isFetching
+      : isGitHubFolderSelected
+        ? githubItemsQuery.isFetching
+        : search.trim() && searchMode === "semantic" ? searchQuery.isFetching : bookmarksQuery.isFetching;
+  const rowPaginationScope = [
+    isXFolderSelected ? "x" : isGitHubFolderSelected ? "github" : "bookmarks",
+    activeFolderId ?? "all",
+    searchMode,
+    search,
+  ].join(":");
+  const visibleRowLimit =
+    rowPagination.scope === rowPaginationScope ? rowPagination.limit : ROW_PAGE_SIZE;
+  const totalVisibleRows = isXFolderSelected
+    ? xRows.length
+    : isGitHubFolderSelected
+      ? githubRows.length
+      : visibleRows.length;
+  const hasMoreRows = totalVisibleRows > visibleRowLimit;
+  const displayedXRows = xRows.slice(0, visibleRowLimit);
+  const displayedGitHubRows = githubRows.slice(0, visibleRowLimit);
+  const displayedVisibleRows = visibleRows.slice(0, visibleRowLimit);
+
+  React.useEffect(() => {
+    const target = loadMoreRef.current;
+    if (!target || !hasMoreRows || isLoadingRows) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setRowPagination((currentPagination) => {
+            const currentLimit =
+              currentPagination.scope === rowPaginationScope ? currentPagination.limit : ROW_PAGE_SIZE;
+
+            return {
+              scope: rowPaginationScope,
+              limit: Math.min(currentLimit + ROW_PAGE_SIZE, totalVisibleRows),
+            };
+          });
+        }
+      },
+      { rootMargin: "160px" },
+    );
+
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [hasMoreRows, isLoadingRows, rowPaginationScope, totalVisibleRows]);
 
   const copyBookmarkUrl = React.useCallback(async (url: string) => {
     try {
@@ -1021,6 +1274,19 @@ function AppIndex() {
                     )}
                     {folder.isPinned ? "Pinned" : "Pin folder"}
                   </ContextMenuItem>
+                  {folder.sourceType !== "local" ? (
+                    <ContextMenuItem
+                      disabled={syncFolderMutation.isPending}
+                      onClick={() => syncFolderMutation.mutate(folder.id)}
+                    >
+                      {syncFolderMutation.isPending ? (
+                        <Loader2Icon className="size-4 animate-spin" />
+                      ) : (
+                        <RefreshCwIcon />
+                      )}
+                      Sync now
+                    </ContextMenuItem>
+                  ) : null}
                   <ContextMenuItem
                     disabled={folder.unseenCount === 0}
                     onClick={() => markFolderSeenMutation.mutate(folder.id)}
@@ -1052,7 +1318,10 @@ function AppIndex() {
             </DropdownMenuTrigger>
             <DropdownMenuContent className="w-72 rounded-lg p-1" align="start">
               {LIVE_FOLDER_OPTIONS.map((option) => {
-                const alreadyAdded = option.sourceType !== "rss" && liveFolderSourceTypes.has(option.sourceType);
+                const alreadyAdded =
+                  option.sourceType !== "rss" &&
+                  option.sourceType !== "github" &&
+                  liveFolderSourceTypes.has(option.sourceType);
 
                 return (
                   <DropdownMenuItem
@@ -1062,6 +1331,16 @@ function AppIndex() {
                     onClick={() => {
                       if (option.sourceType === "rss") {
                         setIsRssFolderDialogOpen(true);
+                        return;
+                      }
+
+                      if (option.sourceType === "github") {
+                        setIsGitHubFolderDialogOpen(true);
+                        return;
+                      }
+
+                      if (option.sourceType === "x") {
+                        window.location.href = "/api/x/connect";
                         return;
                       }
 
@@ -1142,6 +1421,87 @@ function AppIndex() {
                     }}
                   >
                     Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
+                    disabled={createLiveFolderMutation.isPending}
+                  >
+                    {createLiveFolderMutation.isPending ? (
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                    ) : null}
+                    {createLiveFolderMutation.isPending ? "Adding" : "Add live folder"}
+                  </button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog
+            open={isGitHubFolderDialogOpen}
+            onOpenChange={(open) => {
+              setIsGitHubFolderDialogOpen(open);
+              if (!open) {
+                setGithubRepoValue("");
+                setGithubResourceType("all");
+              }
+            }}
+          >
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Add GitHub live folder</DialogTitle>
+                <DialogDescription>
+                  Connect GitHub, then choose a repository stream. Issues, PRs, and releases are fetched live.
+                </DialogDescription>
+              </DialogHeader>
+              <form className="grid gap-4" onSubmit={submitGitHubFolder}>
+                <div className="grid gap-2">
+                  <label className="text-sm font-medium text-foreground" htmlFor="github-repo">
+                    Repository
+                  </label>
+                  <Input
+                    id="github-repo"
+                    className="h-9 rounded-md text-sm"
+                    placeholder="owner/repo"
+                    value={githubRepoValue}
+                    onChange={(event) => setGithubRepoValue(event.target.value)}
+                    required
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <p className="text-sm font-medium text-foreground">Stream</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(["all", "issues", "pulls", "releases"] as const).map((resourceType) => (
+                      <button
+                        key={resourceType}
+                        type="button"
+                        className="inline-flex h-9 items-center justify-center gap-2 rounded-md border bg-background px-3 text-sm capitalize text-muted-foreground transition-colors hover:bg-muted hover:text-foreground aria-pressed:border-ring aria-pressed:bg-muted aria-pressed:text-foreground"
+                        aria-pressed={githubResourceType === resourceType}
+                        onClick={() => setGithubResourceType(resourceType)}
+                      >
+                        {resourceType === "pulls" ? (
+                          <GitPullRequestIcon className="size-3.5" />
+                        ) : (
+                          <SiGithub className="size-3.5" />
+                        )}
+                        {resourceType}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <DialogFooter>
+                  <button
+                    type="button"
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm text-muted-foreground hover:bg-muted disabled:opacity-50"
+                    disabled={connectGitHubMutation.isPending}
+                    onClick={() => connectGitHubMutation.mutate()}
+                  >
+                    {connectGitHubMutation.isPending ? (
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                    ) : (
+                      <SiGithub className="size-3.5" />
+                    )}
+                    Connect GitHub
                   </button>
                   <button
                     type="submit"
@@ -1276,7 +1636,7 @@ function AppIndex() {
         </div>
 
         <ul className="divide-y divide-border/60">
-          {isLoadingRows || (isRefreshingRows && visibleRows.length === 0)
+          {isLoadingRows || (isRefreshingRows && totalVisibleRows === 0)
             ? Array.from({ length: 6 }).map((_, index) => (
                 <li
                   key={`skeleton-${index}`}
@@ -1297,7 +1657,150 @@ function AppIndex() {
             : null}
 
           {!isLoadingRows &&
-            visibleRows.map((item) => {
+            isXFolderSelected &&
+            xBookmarksQuery.data?.error ? (
+              <li className="px-2 py-10 text-center">
+                <p className="text-sm text-foreground">{xBookmarksQuery.data.error}</p>
+                {xBookmarksQuery.data.status ? (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    X API status {xBookmarksQuery.data.status}
+                  </p>
+                ) : null}
+              </li>
+            ) : null}
+
+          {!isLoadingRows &&
+            isXFolderSelected &&
+            !xBookmarksQuery.data?.error &&
+            displayedXRows.map((item) => (
+              <li key={item.id} className="py-1">
+                <ContextMenu>
+                  <ContextMenuTrigger className="block w-full rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
+                    <div className="grid grid-cols-[minmax(0,1fr)_86px] items-start gap-3 rounded-md px-2 py-2 transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 data-[state=open]:bg-muted/50">
+                      <div className="flex min-w-0 items-start gap-2.5">
+                        <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground">
+                          <SiX className="size-3.5" />
+                        </span>
+                        <div className="min-w-0">
+                          <a
+                            href={item.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="block truncate text-sm text-foreground hover:underline"
+                          >
+                            {item.title}
+                          </a>
+                          {search.trim() ? (
+                            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
+                              <span className="truncate text-xs text-muted-foreground">
+                                {item.username ? `@${item.username}` : item.authorName ?? "X"}
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                      <p className="pt-0.5 text-right text-xs text-muted-foreground">
+                        {item.createdAt
+                          ? new Date(item.createdAt).toLocaleDateString(undefined, {
+                              month: "short",
+                              day: "numeric",
+                            })
+                          : ""}
+                      </p>
+                    </div>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent className="min-w-44 rounded-lg p-1">
+                    <ContextMenuItem onClick={() => void copyBookmarkUrl(item.url)}>
+                      <ClipboardIcon />
+                      Copy URL
+                    </ContextMenuItem>
+                    <ContextMenuItem onClick={() => window.open(item.url, "_blank", "noopener,noreferrer")}>
+                      <ExternalLinkIcon />
+                      Open on X
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
+              </li>
+            ))}
+
+          {!isLoadingRows &&
+            isGitHubFolderSelected &&
+            githubItemsQuery.data?.error ? (
+              <li className="px-2 py-10 text-center">
+                <p className="text-sm text-foreground">{githubItemsQuery.data.error}</p>
+                {githubItemsQuery.data.status ? (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    GitHub API status {githubItemsQuery.data.status}
+                  </p>
+                ) : null}
+              </li>
+            ) : null}
+
+          {!isLoadingRows &&
+            isGitHubFolderSelected &&
+            !githubItemsQuery.data?.error &&
+            displayedGitHubRows.map((item) => (
+              <li key={item.id} className="py-1">
+                <ContextMenu>
+                  <ContextMenuTrigger className="block w-full rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
+                    <div className="grid grid-cols-[minmax(0,1fr)_86px] items-start gap-3 rounded-md px-2 py-2 transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 data-[state=open]:bg-muted/50">
+                      <div className="flex min-w-0 items-start gap-2.5">
+                        <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground">
+                          {item.type === "pulls" ? (
+                            <GitPullRequestIcon className="size-3.5" />
+                          ) : (
+                            <SiGithub className="size-3.5" />
+                          )}
+                        </span>
+                        <div className="min-w-0">
+                          <a
+                            href={item.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="block truncate text-sm text-foreground hover:underline"
+                          >
+                            {item.title}
+                          </a>
+                          {search.trim() ? (
+                            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
+                              <span className="truncate text-xs text-muted-foreground">
+                                {item.author ? `@${item.author}` : "GitHub"}
+                              </span>
+                              <span className="inline-flex h-5 shrink-0 items-center rounded-full border bg-muted/60 px-2 text-[11px] font-medium text-muted-foreground">
+                                {item.type}
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                      <p className="pt-0.5 text-right text-xs text-muted-foreground">
+                        {item.updatedAt || item.createdAt
+                          ? new Date(item.updatedAt ?? item.createdAt ?? "").toLocaleDateString(undefined, {
+                              month: "short",
+                              day: "numeric",
+                            })
+                          : ""}
+                      </p>
+                    </div>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent className="min-w-44 rounded-lg p-1">
+                    <ContextMenuItem onClick={() => void copyBookmarkUrl(item.url)}>
+                      <ClipboardIcon />
+                      Copy URL
+                    </ContextMenuItem>
+                    <ContextMenuItem onClick={() => window.open(item.url, "_blank", "noopener,noreferrer")}>
+                      <ExternalLinkIcon />
+                      Open on GitHub
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
+              </li>
+            ))}
+
+          {!isLoadingRows &&
+            !isXFolderSelected &&
+            !isGitHubFolderSelected &&
+            displayedVisibleRows.map((item) => {
               const isLink = item.contentType === "link";
               const host = isLink ? getHostFromUrl(item.url) : "";
               const displayTitle = item.title || (isLink ? getDisplayLabelFromUrl(item.url) : item.url);
@@ -1445,9 +1948,25 @@ function AppIndex() {
               );
             })}
 
-          {!isLoadingRows && visibleRows.length === 0 ? (
+          {!isLoadingRows && hasMoreRows ? (
+            <li ref={loadMoreRef} className="flex justify-center px-2 py-4">
+              <span className="inline-flex h-7 items-center gap-2 rounded-full border bg-background px-3 text-xs text-muted-foreground shadow-sm shadow-foreground/5">
+                <Loader2Icon className="size-3.5 animate-spin" />
+                Loading more
+              </span>
+            </li>
+          ) : null}
+
+          {!isLoadingRows &&
+          !xBookmarksQuery.data?.error &&
+          !githubItemsQuery.data?.error &&
+          totalVisibleRows === 0 ? (
             <li className="px-2 py-10 text-center text-sm text-muted-foreground">
-              No bookmarks yet.
+              {isXFolderSelected
+                ? "No X bookmarks found."
+                : isGitHubFolderSelected
+                  ? "No GitHub items found."
+                  : "No bookmarks yet."}
             </li>
           ) : null}
         </ul>

@@ -20,6 +20,10 @@ import { Route as GuestSignupRouteImport } from './routes/_guest/signup'
 import { Route as GuestLoginRouteImport } from './routes/_guest/login'
 import { Route as AuthAppRouteRouteImport } from './routes/_auth/app/route'
 import { Route as AuthAppIndexRouteImport } from './routes/_auth/app/index'
+import { Route as ApiXConnectRouteImport } from './routes/api/x/connect'
+import { Route as ApiXCallbackRouteImport } from './routes/api/x/callback'
+import { Route as ApiXBookmarksRouteImport } from './routes/api/x/bookmarks'
+import { Route as ApiGithubItemsRouteImport } from './routes/api/github/items'
 import { Route as ApiBookmarksSearchRouteImport } from './routes/api/bookmarks.search'
 import { Route as ApiBookmarksAskRouteImport } from './routes/api/bookmarks.ask'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -77,6 +81,26 @@ const AuthAppIndexRoute = AuthAppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AuthAppRouteRoute,
 } as any)
+const ApiXConnectRoute = ApiXConnectRouteImport.update({
+  id: '/api/x/connect',
+  path: '/api/x/connect',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiXCallbackRoute = ApiXCallbackRouteImport.update({
+  id: '/api/x/callback',
+  path: '/api/x/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiXBookmarksRoute = ApiXBookmarksRouteImport.update({
+  id: '/api/x/bookmarks',
+  path: '/api/x/bookmarks',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiGithubItemsRoute = ApiGithubItemsRouteImport.update({
+  id: '/api/github/items',
+  path: '/api/github/items',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiBookmarksSearchRoute = ApiBookmarksSearchRouteImport.update({
   id: '/search',
   path: '/search',
@@ -105,6 +129,10 @@ export interface FileRoutesByFullPath {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/bookmarks/ask': typeof ApiBookmarksAskRoute
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
+  '/api/github/items': typeof ApiGithubItemsRoute
+  '/api/x/bookmarks': typeof ApiXBookmarksRoute
+  '/api/x/callback': typeof ApiXCallbackRoute
+  '/api/x/connect': typeof ApiXConnectRoute
   '/app/': typeof AuthAppIndexRoute
 }
 export interface FileRoutesByTo {
@@ -118,6 +146,10 @@ export interface FileRoutesByTo {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/bookmarks/ask': typeof ApiBookmarksAskRoute
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
+  '/api/github/items': typeof ApiGithubItemsRoute
+  '/api/x/bookmarks': typeof ApiXBookmarksRoute
+  '/api/x/callback': typeof ApiXCallbackRoute
+  '/api/x/connect': typeof ApiXConnectRoute
   '/app': typeof AuthAppIndexRoute
 }
 export interface FileRoutesById {
@@ -135,6 +167,10 @@ export interface FileRoutesById {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/bookmarks/ask': typeof ApiBookmarksAskRoute
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
+  '/api/github/items': typeof ApiGithubItemsRoute
+  '/api/x/bookmarks': typeof ApiXBookmarksRoute
+  '/api/x/callback': typeof ApiXCallbackRoute
+  '/api/x/connect': typeof ApiXConnectRoute
   '/_auth/app/': typeof AuthAppIndexRoute
 }
 export interface FileRouteTypes {
@@ -151,6 +187,10 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/bookmarks/ask'
     | '/api/bookmarks/search'
+    | '/api/github/items'
+    | '/api/x/bookmarks'
+    | '/api/x/callback'
+    | '/api/x/connect'
     | '/app/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -164,6 +204,10 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/bookmarks/ask'
     | '/api/bookmarks/search'
+    | '/api/github/items'
+    | '/api/x/bookmarks'
+    | '/api/x/callback'
+    | '/api/x/connect'
     | '/app'
   id:
     | '__root__'
@@ -180,6 +224,10 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/bookmarks/ask'
     | '/api/bookmarks/search'
+    | '/api/github/items'
+    | '/api/x/bookmarks'
+    | '/api/x/callback'
+    | '/api/x/connect'
     | '/_auth/app/'
   fileRoutesById: FileRoutesById
 }
@@ -192,6 +240,10 @@ export interface RootRouteChildren {
   ApiInngestRoute: typeof ApiInngestRoute
   ApiUploadthingRoute: typeof ApiUploadthingRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiGithubItemsRoute: typeof ApiGithubItemsRoute
+  ApiXBookmarksRoute: typeof ApiXBookmarksRoute
+  ApiXCallbackRoute: typeof ApiXCallbackRoute
+  ApiXConnectRoute: typeof ApiXConnectRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -272,6 +324,34 @@ declare module '@tanstack/react-router' {
       fullPath: '/app/'
       preLoaderRoute: typeof AuthAppIndexRouteImport
       parentRoute: typeof AuthAppRouteRoute
+    }
+    '/api/x/connect': {
+      id: '/api/x/connect'
+      path: '/api/x/connect'
+      fullPath: '/api/x/connect'
+      preLoaderRoute: typeof ApiXConnectRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/x/callback': {
+      id: '/api/x/callback'
+      path: '/api/x/callback'
+      fullPath: '/api/x/callback'
+      preLoaderRoute: typeof ApiXCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/x/bookmarks': {
+      id: '/api/x/bookmarks'
+      path: '/api/x/bookmarks'
+      fullPath: '/api/x/bookmarks'
+      preLoaderRoute: typeof ApiXBookmarksRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/github/items': {
+      id: '/api/github/items'
+      path: '/api/github/items'
+      fullPath: '/api/github/items'
+      preLoaderRoute: typeof ApiGithubItemsRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/bookmarks/search': {
       id: '/api/bookmarks/search'
@@ -358,6 +438,10 @@ const rootRouteChildren: RootRouteChildren = {
   ApiInngestRoute: ApiInngestRoute,
   ApiUploadthingRoute: ApiUploadthingRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiGithubItemsRoute: ApiGithubItemsRoute,
+  ApiXBookmarksRoute: ApiXBookmarksRoute,
+  ApiXCallbackRoute: ApiXCallbackRoute,
+  ApiXConnectRoute: ApiXConnectRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

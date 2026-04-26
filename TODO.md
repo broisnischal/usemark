@@ -1,0 +1,35 @@
+- fix the sqlite insert bulk issue, 
+-  add the profile page, with conenctors,
+- delete mine account feature
+- export and import via json/csv
+- foldeer wise rss feed, enable disable per user, 
+- import bookmark, via parser, like chrome and other browsers, 
+- pagination, infinite scrolling, lazy loading, batch chunking, bulking, and so on
+- reddit account connect and fetch the saved, in their
+- fix the bug of double default being created when user is signing up for first time, 
+- create the proper landing page,
+- name the project better
+- sharable bookmarks, with users, both can add and see the links, that are being added in there.
+- connect to notion.
+- flags important, status, already visited or not, 
+- select all, move, export, delete all, 
+- email, reminder, about the rss, if something updated or so on
+- browser extension - chrome, firefox, 
+- telegram bot that can have ai, and links save, send, find
+- dead link monitor
+- programmable api, and mcp, 
+- local first, in indexed db, runs offline
+- donate sponsor some fund, so i can buy xapi
+- pwa works on mobile as well,
+- chatbot, ( kimi, llama ) integration
+- advanced search filteration, like from website hosts, paths, and so on
+- feature to add the utm source, of here,
+- screenshot saves, text saves, future, use cimi by claude, for the embedding in the pictures
+- add tanstack keybinding, for shortcuts
+- add the nuqs for the better support for urls, and seo
+- make the seo friendly, website
+- add bio and better profile
+- make the saas and charge for some in future,
+- add feature of hold to delete
+- help and supoert page, proper issue tracking in github, 
+- icon, and branding, better

@@ -67,6 +67,9 @@ interface RssItem {
   publishedAt: Date | null;
 }
 
+const RSS_MAX_ACTIVE_ITEMS = 250;
+const RSS_INSERT_CHUNK_SIZE = 40;
+
 function inferContentType(value: string): BookmarkContentType {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -173,29 +176,36 @@ function readXmlLink(source: string) {
 
 function parseRssItems(xml: string) {
   const itemMatches = [...xml.matchAll(/<(item|entry)\b[\s\S]*?<\/\1>/gi)];
+  const seenItemIds = new Set<string>();
 
   return itemMatches
-    .map((match): RssItem | null => {
+    .reduce<RssItem[]>((items, match) => {
       const itemXml = match[0];
       const title = readXmlTag(itemXml, "title") || "Untitled";
       const url = readXmlLink(itemXml);
       if (!url) {
-        return null;
+        return items;
       }
 
       const guid = readXmlTag(itemXml, "guid") || readXmlTag(itemXml, "id") || url;
+      if (seenItemIds.has(guid)) {
+        return items;
+      }
+
+      seenItemIds.add(guid);
       const publishedValue = readXmlTag(itemXml, "pubDate") || readXmlTag(itemXml, "published") || readXmlTag(itemXml, "updated");
       const publishedAt = publishedValue ? new Date(publishedValue) : null;
 
-      return {
+      items.push({
         id: guid,
         title,
         url,
         publishedAt: publishedAt && Number.isFinite(publishedAt.getTime()) ? publishedAt : null,
-      };
-    })
-    .filter((item): item is RssItem => Boolean(item))
-    .slice(0, 25);
+      });
+
+      return items;
+    }, [])
+    .slice(0, RSS_MAX_ACTIVE_ITEMS);
 }
 
 function getUrlHost(urlValue: string) {
@@ -705,35 +715,28 @@ export async function syncRssBookmarkFolder(folderId: string) {
 
   const xml = await response.text();
   const items = parseRssItems(xml);
-  let added = 0;
-  const bookmarkIds: string[] = [];
+  const existingSourceItemIds = new Set(
+    await db
+      .select({ sourceItemId: bookmark.sourceItemId })
+      .from(bookmark)
+      .where(and(eq(bookmark.userId, folder.userId), eq(bookmark.folderId, folder.id), isNotNull(bookmark.sourceItemId)))
+      .then((rows) => rows.map((row) => row.sourceItemId).filter((sourceItemId): sourceItemId is string => Boolean(sourceItemId))),
+  );
+  const newBookmarks: Array<typeof bookmark.$inferInsert> = [];
 
   for (const item of items) {
+    if (existingSourceItemIds.has(item.id)) {
+      continue;
+    }
+
     const normalized = normalizeBookmarkContent(item.url);
     if (normalized.contentType !== "link") {
       continue;
     }
 
-    const existing = await db
-      .select({ id: bookmark.id })
-      .from(bookmark)
-      .where(
-        and(
-          eq(bookmark.userId, folder.userId),
-          eq(bookmark.folderId, folder.id),
-          eq(bookmark.sourceItemId, item.id),
-        ),
-      )
-      .limit(1)
-      .then((rows) => rows[0]);
-
-    if (existing) {
-      continue;
-    }
-
     const bookmarkId = crypto.randomUUID();
 
-    await db.insert(bookmark).values({
+    newBookmarks.push({
       id: bookmarkId,
       userId: folder.userId,
       contentType: "link",
@@ -746,21 +749,23 @@ export async function syncRssBookmarkFolder(folderId: string) {
       folderId: folder.id,
       embeddingStatus: "pending",
       createdAt: item.publishedAt ?? new Date(),
-    } satisfies typeof bookmark.$inferInsert);
+    });
+    existingSourceItemIds.add(item.id);
+  }
 
-    added += 1;
-    bookmarkIds.push(bookmarkId);
+  for (let index = 0; index < newBookmarks.length; index += RSS_INSERT_CHUNK_SIZE) {
+    await db.insert(bookmark).values(newBookmarks.slice(index, index + RSS_INSERT_CHUNK_SIZE));
   }
 
   await db
     .update(bookmarkFolder)
     .set({
       lastSyncedAt: new Date(),
-      unseenCount: folder.unseenCount + added,
+      unseenCount: folder.unseenCount + newBookmarks.length,
     })
     .where(eq(bookmarkFolder.id, folder.id));
 
-  return { added, bookmarkIds };
+  return { added: newBookmarks.length, bookmarkIds: newBookmarks.map((item) => item.id) };
 }
 
 export async function listDueRssBookmarkFolderIds() {
