@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, Link, Outlet, useRouter } from "@tanstack/react-router";
+import { createFileRoute, Outlet, useRouter } from "@tanstack/react-router";
 import { LogOutIcon, MoonIcon, Settings2Icon, SunIcon } from "lucide-react";
 
 import { useTheme } from "@/components/theme-provider";
@@ -38,9 +38,7 @@ function AppLayout() {
     <div className="flex min-h-svh flex-col items-center gap-2 px-2 py-4">
       <div className="flex w-full max-w-5xl justify-between">
         <div className="flex items-center gap-2">
-          <Button render={<Link to="/" />} size="sm" nativeButton={false}>
-            back to home
-          </Button>
+          <h1 className=" tracking-tight">UseMarks</h1>
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="outline" size="icon-sm" />}>

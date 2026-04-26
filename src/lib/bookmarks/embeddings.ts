@@ -16,15 +16,31 @@ export function getEmbeddingModelName() {
 }
 
 export function toEmbeddingText(input: {
+  contentType: string;
   url: string;
   note?: string | null;
   folder: string;
   tag: string;
+  createdAt: Date;
 }) {
+  const dateParts = new Intl.DateTimeFormat("en", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).formatToParts(input.createdAt);
+  const month = dateParts.find((part) => part.type === "month")?.value ?? "";
+  const weekday = dateParts.find((part) => part.type === "weekday")?.value ?? "";
+
   return [
+    `type: ${input.contentType}`,
     `url: ${input.url}`,
     `tag: ${input.tag}`,
     `folder: ${input.folder}`,
+    `saved_at: ${input.createdAt.toISOString()}`,
+    month ? `saved_month: ${month}` : "",
+    weekday ? `saved_weekday: ${weekday}` : "",
     input.note ? `note: ${input.note}` : "",
   ]
     .filter(Boolean)

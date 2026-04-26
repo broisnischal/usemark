@@ -92,3 +92,9 @@ Code in this template is public domain via [Unlicense](./LICENSE). Feel free to 
 - [@tanstack/intent](https://tanstack.com/intent/latest/docs/getting-started/quick-start-consumers) - Up-to-date skills for your AI agents, auto-synchronized from your installed dependencies.
 - [awesome-tanstack-start](https://github.com/Balastrong/awesome-tanstack-start) - A curated list of awesome resources for TanStack Start.
 - [shadcn/ui Directory](https://ui.shadcn.com/docs/directory), [MCP](https://ui.shadcn.com/docs/mcp), [shoogle.dev](https://shoogle.dev/) - Component directories & registries for shadcn/ui.
+
+ not not like that, if the live folder is rss, it should ask user for the rss, field as the input and using that it should create the live synced bookmkar that syncs time to time, and alerts if there is new changes like add the notification like count if there is any which user has not seen, 
+
+and that can user add multiples, 
+
+and there some of the folders that i can create or someone can share as the public, which others can use like they, like the daily dev, i want the articles/links to show up in their 

@@ -60,7 +60,8 @@ function formatBookmarkContext(rows: BookmarkRecord[]) {
     .map((row, index) => {
       return [
         `Source ${index + 1}`,
-        `url: ${row.url}`,
+        `type: ${row.contentType}`,
+        `${row.contentType === "link" ? "url" : "text"}: ${row.url}`,
         `tag: ${row.tag}`,
         `folder: ${row.folderName}`,
         `saved_at: ${toDateLabel(row.createdAt)}`,

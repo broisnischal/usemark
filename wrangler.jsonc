@@ -2,7 +2,25 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "tanstarter",
   "compatibility_date": "2026-04-22",
-  "routes": ["shop.lexicon.website/*", "www.shop.lexicon.website/*", "shop.lexicon.website"],
+  "routes": [
+    {
+      "pattern": "shop.lexicon.website/*",
+      "zone_name": "lexicon.website",
+    },
+    {
+      "pattern": "www.shop.lexicon.website/*",
+      "zone_name": "lexicon.website",
+    },
+    {
+      "pattern": "shop.lexicon.website",
+      "zone_name": "lexicon.website",
+    },
+    {
+      "pattern": "shop.lexicon.website",
+      "zone_name": "lexicon.website",
+      "custom_domain": true,
+    },
+  ],
   "preview_urls": true,
   "compatibility_flags": ["nodejs_compat"],
   "main": "@tanstack/react-start/server-entry",
@@ -13,6 +31,8 @@
     "GITHUB_CLIENT_SECRET": "",
     "GOOGLE_CLIENT_ID": "",
     "GOOGLE_CLIENT_SECRET": "",
+    "INNGEST_EVENT_KEY": "Xc8hhnY06krUEA9jBneSkue-GglMAYGFYfO9MEY2r8ZuWoHlDZqL-dBsLLAvkIzVdxwK46Jt0gTpi13y_WAQHA",
+    "INNGEST_SIGNING_KEY": "signkey-prod-c58a82c4d835ab478aa38f526b233b1b77eea6bb817344cc6164ef041ef03a49",
   },
   "observability": {
     "logs": {
