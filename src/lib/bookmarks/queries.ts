@@ -16,6 +16,8 @@ async function readJson<T>(response: Response) {
 export const bookmarksQueryOptions = () =>
   queryOptions({
     queryKey: bookmarksQueryKey,
+    staleTime: 15_000,
+    gcTime: 5 * 60_000,
     queryFn: async ({ signal }) => {
       const response = await fetch("/api/bookmarks", {
         method: "GET",
@@ -28,6 +30,8 @@ export const bookmarksQueryOptions = () =>
 export const bookmarkSearchQueryOptions = (query: string) =>
   queryOptions({
     queryKey: ["bookmarks", "search", query] as const,
+    staleTime: 20_000,
+    gcTime: 5 * 60_000,
     queryFn: async ({ signal }) => {
       const response = await fetch("/api/bookmarks/search", {
         method: "POST",
@@ -45,6 +49,8 @@ export const bookmarkSearchQueryOptions = (query: string) =>
 export const bookmarkFoldersQueryOptions = () =>
   queryOptions({
     queryKey: bookmarkFoldersQueryKey,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
     queryFn: async ({ signal }) => {
       const response = await fetch("/api/bookmark-folders", {
         method: "GET",

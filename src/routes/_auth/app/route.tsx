@@ -1,6 +1,6 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useIsFetching, useIsMutating, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Outlet, useRouter } from "@tanstack/react-router";
-import { LogOutIcon, MoonIcon, Settings2Icon, SunIcon } from "lucide-react";
+import { Loader2Icon, LogOutIcon, MoonIcon, Settings2Icon, SunIcon } from "lucide-react";
 
 import { useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,9 @@ function AppLayout() {
   const { setTheme } = useTheme();
   const queryClient = useQueryClient();
   const router = useRouter();
+  const isFetching = useIsFetching();
+  const isMutating = useIsMutating();
+  const isBusy = isFetching + isMutating > 0;
 
   const signOut = async () => {
     await authClient.signOut({
@@ -35,10 +38,32 @@ function AppLayout() {
   };
 
   return (
-    <div className="flex min-h-svh flex-col items-center gap-2 px-2 py-4">
-      <div className="flex w-full max-w-5xl justify-between">
-        <div className="flex items-center gap-2">
-          <h1 className=" tracking-tight">UseMarks</h1>
+    <div className="flex min-h-svh flex-col items-center bg-background">
+      <div
+        className="fixed top-0 right-0 left-0 z-50 h-0.5 overflow-hidden bg-transparent"
+        aria-hidden={!isBusy}
+      >
+        <div
+          className={`h-full bg-primary transition-[width,opacity] duration-300 ease-out ${
+            isBusy ? "w-full opacity-100" : "w-0 opacity-0"
+          }`}
+        />
+      </div>
+      <header className="w-full border-b bg-background">
+        <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between px-4">
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="flex size-7 items-center justify-center rounded-lg border bg-card text-sm font-semibold shadow-sm">
+            U
+          </div>
+          <div className="min-w-0">
+            <h1 className="truncate text-sm font-semibold tracking-tight">UseMarks</h1>
+            <p className="text-[11px] text-muted-foreground">
+              {isBusy ? "Syncing changes" : "Ready"}
+            </p>
+          </div>
+          {isBusy ? (
+            <Loader2Icon className="size-3.5 animate-spin text-muted-foreground" />
+          ) : null}
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="outline" size="icon-sm" />}>
@@ -60,8 +85,9 @@ function AppLayout() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-      </div>
-      <div className="w-full max-w-5xl">
+        </div>
+      </header>
+      <div className="w-full max-w-6xl">
         <Outlet />
       </div>
     </div>

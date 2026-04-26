@@ -1,4 +1,3 @@
-import "@tanstack/react-start/server-only";
 import { env as workerEnv } from "cloudflare:workers";
 
 const DEFAULT_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5";
@@ -18,6 +17,7 @@ export function getEmbeddingModelName() {
 export function toEmbeddingText(input: {
   contentType: string;
   url: string;
+  title?: string | null;
   note?: string | null;
   folder: string;
   tag: string;
@@ -35,6 +35,7 @@ export function toEmbeddingText(input: {
 
   return [
     `type: ${input.contentType}`,
+    input.title ? `title: ${input.title}` : "",
     `url: ${input.url}`,
     `tag: ${input.tag}`,
     `folder: ${input.folder}`,
@@ -45,91 +46,6 @@ export function toEmbeddingText(input: {
   ]
     .filter(Boolean)
     .join("\n");
-}
-
-function decodeHtmlEntities(value: string) {
-  return value
-    .replaceAll("&nbsp;", " ")
-    .replaceAll("&amp;", "&")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&#39;", "'");
-}
-
-function cleanTextFromHtml(html: string) {
-  return decodeHtmlEntities(
-    html
-      .replaceAll(/<script[\s\S]*?<\/script>/gi, " ")
-      .replaceAll(/<style[\s\S]*?<\/style>/gi, " ")
-      .replaceAll(/<noscript[\s\S]*?<\/noscript>/gi, " ")
-      .replaceAll(/<\/(p|div|article|section|h1|h2|h3|li|br)>/gi, "\n")
-      .replaceAll(/<[^>]+>/g, " ")
-      .replaceAll(/\s+/g, " ")
-      .trim(),
-  );
-}
-
-function matchGroup(source: string, expression: RegExp) {
-  const result = source.match(expression);
-  return result?.[1]?.trim() ?? "";
-}
-
-function truncate(text: string, limit: number) {
-  if (text.length <= limit) {
-    return text;
-  }
-  return `${text.slice(0, limit)}...`;
-}
-
-export async function fetchPageSemanticText(url: string) {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8_000);
-    const response = await fetch(url, {
-      method: "GET",
-      redirect: "follow",
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "UseMarkBot/1.0 (+semantic bookmark indexer)",
-      },
-    });
-    clearTimeout(timeout);
-
-    if (!response.ok) {
-      return null;
-    }
-
-    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-    if (!contentType.includes("text/html")) {
-      return null;
-    }
-
-    const html = await response.text();
-    const htmlTitle = matchGroup(html, /<title[^>]*>([\s\S]*?)<\/title>/i);
-    const metaDescription = matchGroup(
-      html,
-      /<meta[^>]+name=["']description["'][^>]+content=["']([\s\S]*?)["'][^>]*>/i,
-    );
-    const ogDescription = matchGroup(
-      html,
-      /<meta[^>]+property=["']og:description["'][^>]+content=["']([\s\S]*?)["'][^>]*>/i,
-    );
-    const articleBody = cleanTextFromHtml(
-      matchGroup(html, /<main[^>]*>([\s\S]*?)<\/main>/i) ||
-        matchGroup(html, /<article[^>]*>([\s\S]*?)<\/article>/i) ||
-        matchGroup(html, /<body[^>]*>([\s\S]*?)<\/body>/i) ||
-        html,
-    );
-
-    const excerpt = truncate(articleBody, 3500);
-    const summary = [htmlTitle, metaDescription || ogDescription, excerpt]
-      .filter(Boolean)
-      .join("\n");
-    return summary || null;
-  } catch {
-    return null;
-  }
 }
 
 function parseEmbeddingVector(result: unknown): number[] {

@@ -6,10 +6,10 @@ import { bookmark, bookmarkFolder } from "@/lib/db/schema";
 import {
   cosineSimilarity,
   embedText,
-  fetchPageSemanticText,
   getEmbeddingModelName,
   toEmbeddingText,
 } from "./embeddings";
+import { fetchBookmarkMetadata } from "./metadata";
 
 export type BookmarkContentType = "link" | "text";
 export type BookmarkFolderSourceType = "local" | "rss" | "github" | "x" | "reddit";
@@ -18,10 +18,12 @@ export interface BookmarkRecord {
   id: string;
   contentType: BookmarkContentType;
   url: string;
+  title: string | null;
   tag: string;
   folderId: string;
   folderName: string;
   embeddingStatus: string;
+  matchScore?: number;
   createdAt: string;
 }
 
@@ -447,20 +449,24 @@ function toBookmarkRecord(row: {
   id: string;
   contentType: BookmarkContentType;
   url: string;
+  title: string | null;
   tag: string;
   folderId: string;
   folderName: string;
   embeddingStatus: string;
+  matchScore?: number;
   createdAt: Date;
 }): BookmarkRecord {
   return {
     id: row.id,
     contentType: row.contentType,
     url: row.url,
+    title: row.title,
     tag: row.tag,
     folderId: row.folderId,
     folderName: row.folderName,
     embeddingStatus: row.embeddingStatus,
+    matchScore: row.matchScore,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -480,6 +486,7 @@ export async function listBookmarksForUser(userId: string) {
       id: row.bookmark.id,
       contentType: row.bookmark.contentType,
       url: row.bookmark.url,
+      title: row.bookmark.title,
       tag: row.bookmark.tag,
       folderId: row.bookmark.folderId,
       folderName: row.bookmark_folder.name,
@@ -506,6 +513,7 @@ export async function createBookmarkForUser(userId: string, data: CreateBookmark
     userId,
     contentType: normalizedContent.contentType,
     url,
+    title: normalizedContent.contentType === "text" ? url.slice(0, 80) : null,
     note,
     tag: getTagFromContent(url, normalizedContent.contentType),
     folderId: folder.id,
@@ -538,6 +546,58 @@ export async function deleteBookmarkForUser(userId: string, bookmarkId: string) 
     .delete(bookmark)
     .where(and(eq(bookmark.userId, userId), eq(bookmark.id, normalizedBookmarkId)));
 
+  return true;
+}
+
+export async function renameBookmarkTitleForUser(userId: string, bookmarkId: string, title: string) {
+  const normalizedBookmarkId = bookmarkId.trim();
+  const normalizedTitle = title.trim();
+
+  if (!normalizedBookmarkId) {
+    throw new Error("Bookmark id is required.");
+  }
+
+  if (!normalizedTitle) {
+    throw new Error("Title is required.");
+  }
+
+  const existing = await db
+    .select({ id: bookmark.id })
+    .from(bookmark)
+    .where(and(eq(bookmark.userId, userId), eq(bookmark.id, normalizedBookmarkId)))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!existing) {
+    return false;
+  }
+
+  await db
+    .update(bookmark)
+    .set({ title: normalizedTitle })
+    .where(and(eq(bookmark.userId, userId), eq(bookmark.id, normalizedBookmarkId)));
+
+  return true;
+}
+
+export async function refetchBookmarkMetadataForUser(userId: string, bookmarkId: string) {
+  const normalizedBookmarkId = bookmarkId.trim();
+  if (!normalizedBookmarkId) {
+    throw new Error("Bookmark id is required.");
+  }
+
+  const existing = await db
+    .select({ id: bookmark.id })
+    .from(bookmark)
+    .where(and(eq(bookmark.userId, userId), eq(bookmark.id, normalizedBookmarkId)))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!existing) {
+    return false;
+  }
+
+  await processBookmarkEmbedding(normalizedBookmarkId, { force: true, refreshTitle: true });
   return true;
 }
 
@@ -576,7 +636,7 @@ export async function pinBookmarkFolderForUser(userId: string, folderId: string)
   }
 
   const existing = await db
-    .select({ id: bookmarkFolder.id })
+    .select({ id: bookmarkFolder.id, isPinned: bookmarkFolder.isPinned })
     .from(bookmarkFolder)
     .where(and(eq(bookmarkFolder.userId, userId), eq(bookmarkFolder.id, normalizedFolderId)))
     .limit(1)
@@ -584,6 +644,10 @@ export async function pinBookmarkFolderForUser(userId: string, folderId: string)
 
   if (!existing) {
     return false;
+  }
+
+  if (existing.isPinned) {
+    return true;
   }
 
   await db
@@ -674,6 +738,7 @@ export async function syncRssBookmarkFolder(folderId: string) {
       userId: folder.userId,
       contentType: "link",
       url: normalized.content,
+      title: item.title,
       note: item.title,
       tag: getTagFromUrl(normalized.content),
       sourceItemId: item.id,
@@ -707,7 +772,10 @@ export async function listDueRssBookmarkFolderIds() {
   return rows.map((row) => row.id);
 }
 
-export async function processBookmarkEmbedding(bookmarkId: string) {
+export async function processBookmarkEmbedding(
+  bookmarkId: string,
+  options: { force?: boolean; refreshTitle?: boolean } = {},
+) {
   const row = await db
     .select()
     .from(bookmark)
@@ -720,7 +788,7 @@ export async function processBookmarkEmbedding(bookmarkId: string) {
     return;
   }
 
-  if (row.bookmark.embeddingStatus === "ready") {
+  if (row.bookmark.embeddingStatus === "ready" && !options.force) {
     return;
   }
 
@@ -733,18 +801,23 @@ export async function processBookmarkEmbedding(bookmarkId: string) {
     .where(eq(bookmark.id, bookmarkId));
 
   try {
-    const pageText =
-      row.bookmark.contentType === "link" ? await fetchPageSemanticText(row.bookmark.url) : "";
+    const pageMetadata =
+      row.bookmark.contentType === "link" ? await fetchBookmarkMetadata(row.bookmark.url) : null;
+    const resolvedTitle =
+      (options.refreshTitle ? pageMetadata?.title : row.bookmark.title ?? pageMetadata?.title) ??
+      row.bookmark.title ??
+      null;
     const baseEmbeddingText = toEmbeddingText({
       url: row.bookmark.url,
       contentType: row.bookmark.contentType,
+      title: resolvedTitle,
       note: row.bookmark.note,
       folder: row.bookmark_folder.name,
       tag: row.bookmark.tag,
       createdAt: row.bookmark.createdAt,
     });
-    const embeddingText = pageText
-      ? `${baseEmbeddingText}\npage_content: ${pageText}`
+    const embeddingText = pageMetadata?.semanticText
+      ? `${baseEmbeddingText}\npage_content: ${pageMetadata.semanticText}`
       : baseEmbeddingText;
     const embeddingVector = await embedText(embeddingText);
 
@@ -756,6 +829,7 @@ export async function processBookmarkEmbedding(bookmarkId: string) {
         embeddingStatus: "ready",
         embeddingError: null,
         embeddedAt: new Date(),
+        title: resolvedTitle,
       })
       .where(eq(bookmark.id, bookmarkId));
   } catch (error) {
@@ -819,6 +893,7 @@ export async function searchBookmarksForUser(userId: string, data: SearchBookmar
 
       const searchableText = [
         row.bookmark.url,
+        row.bookmark.title ?? "",
         row.bookmark.note ?? "",
         row.bookmark.tag,
         row.bookmark_folder.name,
@@ -875,18 +950,24 @@ export async function searchBookmarksForUser(userId: string, data: SearchBookmar
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, 20)
-    .map((item) =>
-      toBookmarkRecord({
+    .map((item, index, items) => {
+      const topScore = items[0]?.score ?? 0;
+      const normalizedMatchScore =
+        topScore > 0 ? Math.round(Math.max(0, Math.min(1, item.score / topScore)) * 100) : 0;
+
+      return toBookmarkRecord({
         id: item.row.bookmark.id,
         contentType: item.row.bookmark.contentType,
         url: item.row.bookmark.url,
+        title: item.row.bookmark.title,
         tag: item.row.bookmark.tag,
         folderId: item.row.bookmark.folderId,
         folderName: item.row.bookmark_folder.name,
         embeddingStatus: item.row.bookmark.embeddingStatus,
+        matchScore: normalizedMatchScore,
         createdAt: item.row.bookmark.createdAt,
-      }),
-    );
+      });
+    });
 
   return ranked;
 }

@@ -44,6 +44,7 @@ export const bookmark = sqliteTable(
       .references(() => user.id, { onDelete: "cascade" }),
     contentType: text("content_type", { enum: ["link", "text"] }).notNull().default("link"),
     url: text("url").notNull(),
+    title: text("title"),
     note: text("note"),
     tag: text("tag").notNull(),
     sourceItemId: text("source_item_id"),

@@ -1,16 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import {
+  ChevronDownIcon,
   CheckSquareIcon,
   ClipboardIcon,
   CornerDownLeftIcon,
   ExternalLinkIcon,
   FileTextIcon,
   FolderIcon,
+  Loader2Icon,
+  PencilIcon,
   PinIcon,
   PlusIcon,
   RefreshCwIcon,
   RssIcon,
+  SearchIcon,
+  SparklesIcon,
   Trash2Icon,
 } from "lucide-react";
 import { SiGithub, SiReddit, SiX } from "@icons-pack/react-simple-icons";
@@ -59,6 +64,8 @@ export const Route = createFileRoute("/_auth/app/")({
 });
 
 const BOOKMARK_INPUT_DEBOUNCE_MS = 300;
+
+type BookmarkSearchMode = "semantic" | "exact";
 
 const LIVE_FOLDER_OPTIONS: Array<{
   sourceType: BookmarkFolderSourceType;
@@ -127,11 +134,12 @@ function getHostFromUrlValue(urlValue: string) {
 function getDisplayLabelFromUrlValue(urlValue: string) {
   try {
     const parsed = new URL(urlValue);
+    const host = parsed.hostname.replace(/^www\./, "");
     const lastPathSegment = parsed.pathname.split("/").filter(Boolean).at(-1);
     if (lastPathSegment) {
       return decodeURIComponent(lastPathSegment).replace(/[-_]+/g, " ");
     }
-    return parsed.hostname.replace(/^www\./, "");
+    return host;
   } catch {
     return urlValue;
   }
@@ -144,6 +152,7 @@ function bookmarkMatchesSearch(row: BookmarkRecord, query: string) {
   }
 
   const searchableText = [
+    row.title ?? "",
     row.url,
     row.tag,
     row.folderName,
@@ -219,8 +228,14 @@ function AppIndex() {
   const queryClient = useQueryClient();
   const [inputValue, setInputValue] = React.useState("");
   const [selectedFolderId, setSelectedFolderId] = React.useState<string | null | undefined>(undefined);
+  const [addFolderId, setAddFolderId] = React.useState<string | null>(null);
+  const [searchMode, setSearchMode] = React.useState<BookmarkSearchMode>("semantic");
   const [isRssFolderDialogOpen, setIsRssFolderDialogOpen] = React.useState(false);
+  const [isCustomFolderDialogOpen, setIsCustomFolderDialogOpen] = React.useState(false);
+  const [renamingBookmark, setRenamingBookmark] = React.useState<BookmarkRecord | null>(null);
   const [rssFeedUrl, setRssFeedUrl] = React.useState("");
+  const [customFolderName, setCustomFolderName] = React.useState("");
+  const [bookmarkTitleValue, setBookmarkTitleValue] = React.useState("");
   const debouncedInputValue = useDebouncedValue(inputValue, BOOKMARK_INPUT_DEBOUNCE_MS);
   const search = inputValue.trim() ? debouncedInputValue.trim() : "";
 
@@ -228,6 +243,7 @@ function AppIndex() {
   const foldersQuery = useQuery(bookmarkFoldersQueryOptions());
   const searchQuery = useQuery({
     ...bookmarkSearchQueryOptions(search),
+    enabled: searchMode === "semantic" && Boolean(search.trim()),
     placeholderData: (previousData) => previousData,
   });
 
@@ -282,6 +298,10 @@ function AppIndex() {
         id: optimisticId,
         contentType: normalizedContent.contentType,
         url: normalizedContent.content,
+        title:
+          normalizedContent.contentType === "text"
+            ? normalizedContent.content.slice(0, 80)
+            : null,
         tag: getTagFromUrl(payload.url),
         folderId: payload.folderId ?? optimisticId,
         folderName: payload.folder || "default",
@@ -419,6 +439,97 @@ function AppIndex() {
     },
   });
 
+  const renameBookmarkMutation = useMutation({
+    mutationFn: async (payload: { id: string; title: string }) => {
+      const response = await fetch("/api/bookmarks", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorBody = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(
+          response.status === 401
+            ? "Please sign in."
+            : errorBody?.error || "Could not rename bookmark.",
+        );
+      }
+
+      return (await response.json()) as { success: true; id: string; title: string };
+    },
+    onMutate: async (payload) => {
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: bookmarksQueryKey }),
+        queryClient.cancelQueries({ queryKey: ["bookmarks", "search"] }),
+      ]);
+
+      const previousBookmarks = queryClient.getQueryData<BookmarkRecord[]>(bookmarksQueryKey);
+      const previousSearches = queryClient.getQueriesData<BookmarkRecord[]>({
+        queryKey: ["bookmarks", "search"],
+      });
+      const renameRow = (currentRows: BookmarkRecord[] | undefined) =>
+        currentRows?.map((row) =>
+          row.id === payload.id ? { ...row, title: payload.title } : row,
+        );
+
+      queryClient.setQueryData(bookmarksQueryKey, renameRow);
+      previousSearches.forEach(([queryKey]) => {
+        queryClient.setQueryData(queryKey, renameRow);
+      });
+
+      return { previousBookmarks, previousSearches };
+    },
+    onSuccess: () => {
+      toast.success("Bookmark title updated.");
+      setRenamingBookmark(null);
+      setBookmarkTitleValue("");
+    },
+    onError: (error, _payload, context) => {
+      queryClient.setQueryData(bookmarksQueryKey, context?.previousBookmarks);
+      context?.previousSearches.forEach(([queryKey, rows]) => {
+        queryClient.setQueryData(queryKey, rows);
+      });
+      const message = error instanceof Error ? error.message : "Could not rename bookmark.";
+      toast.error(message);
+    },
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: bookmarksQueryKey }),
+        queryClient.invalidateQueries({ queryKey: ["bookmarks", "search"] }),
+      ]);
+    },
+  });
+
+  const refetchBookmarkMetadataMutation = useMutation({
+    mutationFn: async (bookmarkId: string) => {
+      const response = await fetch("/api/bookmarks", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ id: bookmarkId, action: "refetch-metadata" }),
+      });
+
+      if (!response.ok) {
+        throw new Error(response.status === 401 ? "Please sign in." : "Could not refetch metadata.");
+      }
+    },
+    onSuccess: async () => {
+      toast.success("Metadata refreshed.");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: bookmarksQueryKey }),
+        queryClient.invalidateQueries({ queryKey: ["bookmarks", "search"] }),
+      ]);
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Could not refetch metadata.";
+      toast.error(message);
+    },
+  });
+
   const createLiveFolderMutation = useMutation({
     mutationFn: async (payload: {
       name: string;
@@ -480,9 +591,18 @@ function AppIndex() {
           item.name === folder.name && item.sourceType === folder.sourceType ? folder : item,
         );
       });
-      toast.success(`${getFolderSourceLabel(folder.sourceType)} folder added.`);
+      toast.success(
+        folder.sourceType === "local"
+          ? "Folder created."
+          : `${getFolderSourceLabel(folder.sourceType)} folder added.`,
+      );
       setIsRssFolderDialogOpen(false);
+      setIsCustomFolderDialogOpen(false);
       setRssFeedUrl("");
+      setCustomFolderName("");
+      if (folder.sourceType === "local") {
+        setAddFolderId(folder.id);
+      }
     },
     onError: (error, _variables, context) => {
       queryClient.setQueryData(bookmarkFoldersQueryKey, context?.previousFolders);
@@ -553,22 +673,18 @@ function AppIndex() {
       const previousFolders = queryClient.getQueryData<BookmarkFolderRecord[]>(bookmarkFoldersQueryKey);
 
       queryClient.setQueryData(bookmarkFoldersQueryKey, (currentFolders: BookmarkFolderRecord[] | undefined) =>
-        currentFolders?.map((folder) => ({ ...folder, isPinned: folder.id === folderId })),
+        currentFolders
+          ?.map((folder) => ({ ...folder, isPinned: folder.id === folderId }))
+          .sort((a, b) => Number(b.isPinned) - Number(a.isPinned) || a.name.localeCompare(b.name)),
       );
       setSelectedFolderId(folderId);
 
       return { previousFolders };
     },
-    onSuccess: () => {
-      toast.success("Pinned folder updated.");
-    },
     onError: (error, _folderId, context) => {
       queryClient.setQueryData(bookmarkFoldersQueryKey, context?.previousFolders);
       const message = error instanceof Error ? error.message : "Could not pin folder.";
       toast.error(message);
-    },
-    onSettled: async () => {
-      await queryClient.invalidateQueries({ queryKey: bookmarkFoldersQueryKey });
     },
   });
 
@@ -654,11 +770,10 @@ function AppIndex() {
       return;
     }
     setInputValue("");
-    const targetFolder = selectedFolder ?? folders.find((folder) => folder.name === "default");
     createBookmarkMutation.mutate({
       url: nextUrl,
-      folder: targetFolder?.name ?? "default",
-      folderId: targetFolder?.id,
+      folder: addFolder?.name ?? "default",
+      folderId: addFolder?.id,
     });
   };
 
@@ -676,21 +791,58 @@ function AppIndex() {
     });
   };
 
+  const submitCustomFolder = (event: React.SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = customFolderName.trim();
+    if (!name) {
+      return;
+    }
+
+    createLiveFolderMutation.mutate({
+      name,
+      sourceType: "local",
+      externalResourceId: null,
+    });
+  };
+
+  const submitBookmarkTitle = (event: React.SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const title = bookmarkTitleValue.trim();
+    if (!renamingBookmark || !title) {
+      return;
+    }
+
+    renameBookmarkMutation.mutate({ id: renamingBookmark.id, title });
+  };
+
+  const allRows = bookmarksQuery.data ?? [];
   const fetchedRows: BookmarkRecord[] = search.trim()
-    ? (searchQuery.data ?? [])
-    : (bookmarksQuery.data ?? []);
+    ? searchMode === "semantic"
+      ? (searchQuery.data ?? [])
+      : allRows.filter((row) => bookmarkMatchesSearch(row, search))
+    : allRows;
   const folders = foldersQuery.data ?? [];
+  const manualFolders = folders.filter((folder) => folder.sourceType === "local");
   const pinnedFolder = folders.find((folder) => folder.isPinned) ?? null;
   const activeFolderId = selectedFolderId === undefined ? pinnedFolder?.id ?? null : selectedFolderId;
   const selectedFolder = folders.find((folder) => folder.id === activeFolderId) ?? null;
+  const defaultFolder = manualFolders.find((folder) => folder.name === "default") ?? null;
+  const addFolder =
+    manualFolders.find((folder) => folder.id === addFolderId) ??
+    (selectedFolder?.sourceType === "local" ? selectedFolder : null) ??
+    defaultFolder ??
+    manualFolders[0] ??
+    null;
   const visibleRows = activeFolderId
     ? fetchedRows.filter((row) => row.folderId === activeFolderId)
     : fetchedRows;
   const liveFolderSourceTypes = new Set(
     folders.filter((folder) => folder.sourceType !== "local").map((folder) => folder.sourceType),
   );
-  const isLoadingRows = search.trim() ? searchQuery.isLoading : bookmarksQuery.isLoading;
-  const isRefreshingRows = search.trim() ? searchQuery.isFetching : bookmarksQuery.isFetching;
+  const isLoadingRows =
+    search.trim() && searchMode === "semantic" ? searchQuery.isLoading : bookmarksQuery.isLoading;
+  const isRefreshingRows =
+    search.trim() && searchMode === "semantic" ? searchQuery.isFetching : bookmarksQuery.isFetching;
 
   const copyBookmarkUrl = React.useCallback(async (url: string) => {
     try {
@@ -701,30 +853,103 @@ function AppIndex() {
     }
   }, []);
 
-  const refreshBookmarkRows = React.useCallback(() => {
-    void Promise.all([
-      queryClient.invalidateQueries({ queryKey: bookmarksQueryKey }),
-      queryClient.invalidateQueries({ queryKey: ["bookmarks", "search"] }),
-    ]);
-    toast.success("Refreshing bookmark data.");
-  }, [queryClient]);
-
   return (
-    <main className="mx-auto w-full max-w-6xl px-4 py-8">
+    <main className="mx-auto w-full max-w-6xl px-4 py-6">
       <div className="mx-auto w-full">
         <form className="mb-5" onSubmit={submitBookmark}>
-          <div className="relative rounded-xl border bg-card">
-            <PlusIcon className="pointer-events-none absolute top-3.5 left-3 size-4 text-muted-foreground" />
+          <div className="flex min-h-11 items-center rounded-lg border bg-card/90 shadow-sm shadow-foreground/5 transition-all duration-150 focus-within:border-ring/50 focus-within:ring-3 focus-within:ring-ring/10">
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                type="button"
+                className="ml-1 inline-flex h-9 max-w-40 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground"
+              >
+                <FolderIcon className="size-3.5" />
+                <span className="truncate">{addFolder?.name ?? "default"}</span>
+                <ChevronDownIcon className="size-3.5" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="w-56 rounded-lg p-1" align="start">
+                {manualFolders.length > 0 ? (
+                  manualFolders.map((folder) => (
+                    <DropdownMenuItem
+                      key={folder.id}
+                      className="gap-2"
+                      onClick={() => setAddFolderId(folder.id)}
+                    >
+                      <FolderIcon className="size-3.5" />
+                      <span className="truncate">{folder.name}</span>
+                      {addFolder?.id === folder.id ? (
+                        <CheckSquareIcon className="ml-auto size-3.5 text-muted-foreground" />
+                      ) : null}
+                    </DropdownMenuItem>
+                  ))
+                ) : (
+                  <DropdownMenuItem disabled>No folders yet</DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="gap-2"
+                  onClick={() => setIsCustomFolderDialogOpen(true)}
+                >
+                  <PlusIcon className="size-3.5" />
+                  New folder
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Input
-              className="h-11 rounded-xl border-0 bg-transparent pr-20 pl-9 text-sm shadow-none focus-visible:ring-0"
-              placeholder="Insert a link, color, or just plain text..."
+              className="h-11 min-w-0 flex-1 rounded-none border-0 bg-transparent px-2 text-sm shadow-none focus-visible:ring-0"
+              placeholder={
+                searchMode === "semantic"
+                  ? "Add a bookmark, or search semantically..."
+                  : "Add a bookmark, or search exact text..."
+              }
               value={inputValue}
               onChange={(event) => setInputValue(event.target.value)}
               required
             />
-            <span className="pointer-events-none absolute top-3 right-3 inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-              <CornerDownLeftIcon className="size-3.5" />
-              add
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                type="button"
+                className="mr-1 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                {searchMode === "semantic" ? (
+                  <SparklesIcon className="size-3.5" />
+                ) : (
+                  <SearchIcon className="size-3.5" />
+                )}
+                <span className="hidden sm:inline">
+                  {searchMode === "semantic" ? "semantic" : "exact"}
+                </span>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="w-52 rounded-lg p-1" align="end">
+                <DropdownMenuItem
+                  className="gap-2"
+                  onClick={() => setSearchMode("semantic")}
+                >
+                  <SparklesIcon className="size-3.5" />
+                  <span>Semantic search</span>
+                  {searchMode === "semantic" ? (
+                    <CheckSquareIcon className="ml-auto size-3.5 text-muted-foreground" />
+                  ) : null}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="gap-2"
+                  onClick={() => setSearchMode("exact")}
+                >
+                  <SearchIcon className="size-3.5" />
+                  <span>Exact search</span>
+                  {searchMode === "exact" ? (
+                    <CheckSquareIcon className="ml-auto size-3.5 text-muted-foreground" />
+                  ) : null}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <span className="mr-2 hidden shrink-0 items-center gap-1 rounded-md bg-muted px-2 py-1 text-[11px] text-muted-foreground sm:inline-flex">
+              {createBookmarkMutation.isPending ? (
+                <Loader2Icon className="size-3.5 animate-spin" />
+              ) : (
+                <CornerDownLeftIcon className="size-3.5" />
+              )}
+              {createBookmarkMutation.isPending ? "saving" : "add"}
             </span>
           </div>
         </form>
@@ -742,7 +967,7 @@ function AppIndex() {
           {!foldersQuery.isLoading ? (
             <button
               type="button"
-              className="inline-flex h-8 items-center gap-2 rounded-md border bg-background px-2.5 text-sm text-foreground transition-colors hover:bg-muted/60 aria-pressed:bg-muted"
+              className="inline-flex h-8 items-center gap-2 rounded-md border bg-background px-2.5 text-sm text-foreground shadow-sm shadow-foreground/5 transition-all hover:-translate-y-px hover:bg-muted/60 aria-pressed:bg-muted"
               aria-pressed={!activeFolderId}
               onClick={() => setSelectedFolderId(null)}
             >
@@ -757,7 +982,7 @@ function AppIndex() {
                 <ContextMenuTrigger className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
                   <button
                     type="button"
-                    className="inline-flex h-8 max-w-48 items-center gap-2 rounded-md border bg-background px-2.5 text-sm text-foreground transition-colors hover:bg-muted/60 aria-pressed:bg-muted data-[state=open]:bg-muted"
+                    className="inline-flex h-8 max-w-48 items-center gap-2 rounded-md border bg-background px-2.5 text-sm text-foreground shadow-sm shadow-foreground/5 transition-all hover:-translate-y-px hover:bg-muted/60 aria-pressed:bg-muted data-[state=open]:bg-muted"
                     aria-pressed={activeFolderId === folder.id}
                     onClick={() => {
                       setSelectedFolderId(folder.id);
@@ -789,7 +1014,11 @@ function AppIndex() {
                     disabled={folder.isPinned || pinFolderMutation.isPending}
                     onClick={() => pinFolderMutation.mutate(folder.id)}
                   >
-                    <PinIcon />
+                    {pinFolderMutation.isPending ? (
+                      <Loader2Icon className="size-4 animate-spin" />
+                    ) : (
+                      <PinIcon />
+                    )}
                     {folder.isPinned ? "Pinned" : "Pin folder"}
                   </ContextMenuItem>
                   <ContextMenuItem
@@ -805,7 +1034,11 @@ function AppIndex() {
                     variant="destructive"
                     onClick={() => deleteFolderMutation.mutate(folder.id)}
                   >
-                    <Trash2Icon />
+                    {deleteFolderMutation.isPending ? (
+                      <Loader2Icon className="size-4 animate-spin" />
+                    ) : (
+                      <Trash2Icon />
+                    )}
                     Delete folder
                   </ContextMenuItem>
                 </ContextMenuContent>
@@ -813,7 +1046,7 @@ function AppIndex() {
             ))}
 
           <DropdownMenu>
-            <DropdownMenuTrigger className="inline-flex h-8 items-center gap-1.5 rounded-md border border-dashed bg-background px-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground">
+            <DropdownMenuTrigger className="inline-flex h-8 items-center gap-1.5 rounded-md border border-dashed bg-background px-2.5 text-sm text-muted-foreground shadow-sm shadow-foreground/5 transition-all hover:-translate-y-px hover:bg-muted/60 hover:text-foreground">
               <PlusIcon className="size-3.5" />
               Live folder
             </DropdownMenuTrigger>
@@ -851,14 +1084,15 @@ function AppIndex() {
               })}
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                disabled
                 className="items-start gap-3 py-2.5"
+                disabled={createLiveFolderMutation.isPending}
+                onClick={() => setIsCustomFolderDialogOpen(true)}
               >
                 <FolderIcon className="mt-0.5 size-4" />
                 <span>
                   <span className="block text-sm text-foreground">Custom folder</span>
                   <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
-                    Manual naming and source setup is coming next.
+                    Create a manual folder for saved bookmarks.
                   </span>
                 </span>
               </DropdownMenuItem>
@@ -911,10 +1145,124 @@ function AppIndex() {
                   </button>
                   <button
                     type="submit"
-                    className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
                     disabled={createLiveFolderMutation.isPending}
                   >
-                    {createLiveFolderMutation.isPending ? "Adding..." : "Add live folder"}
+                    {createLiveFolderMutation.isPending ? (
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                    ) : null}
+                    {createLiveFolderMutation.isPending ? "Adding" : "Add live folder"}
+                  </button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog
+            open={isCustomFolderDialogOpen}
+            onOpenChange={(open) => {
+              setIsCustomFolderDialogOpen(open);
+              if (!open) {
+                setCustomFolderName("");
+              }
+            }}
+          >
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Create folder</DialogTitle>
+                <DialogDescription>
+                  Manual folders can be selected from the input and used when saving new bookmarks.
+                </DialogDescription>
+              </DialogHeader>
+              <form className="grid gap-4" onSubmit={submitCustomFolder}>
+                <div className="grid gap-2">
+                  <label className="text-sm font-medium text-foreground" htmlFor="custom-folder-name">
+                    Folder name
+                  </label>
+                  <Input
+                    id="custom-folder-name"
+                    className="h-9 rounded-md text-sm"
+                    placeholder="reading list"
+                    value={customFolderName}
+                    onChange={(event) => setCustomFolderName(event.target.value)}
+                    required
+                  />
+                </div>
+                <DialogFooter>
+                  <button
+                    type="button"
+                    className="inline-flex h-9 items-center justify-center rounded-md px-3 text-sm text-muted-foreground hover:bg-muted"
+                    onClick={() => {
+                      setIsCustomFolderDialogOpen(false);
+                      setCustomFolderName("");
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
+                    disabled={createLiveFolderMutation.isPending}
+                  >
+                    {createLiveFolderMutation.isPending ? (
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                    ) : null}
+                    {createLiveFolderMutation.isPending ? "Creating" : "Create folder"}
+                  </button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog
+            open={Boolean(renamingBookmark)}
+            onOpenChange={(open) => {
+              if (!open) {
+                setRenamingBookmark(null);
+                setBookmarkTitleValue("");
+              }
+            }}
+          >
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Rename bookmark</DialogTitle>
+                <DialogDescription>
+                  This title is used in the list, exact search, and future semantic indexing.
+                </DialogDescription>
+              </DialogHeader>
+              <form className="grid gap-4" onSubmit={submitBookmarkTitle}>
+                <div className="grid gap-2">
+                  <label className="text-sm font-medium text-foreground" htmlFor="bookmark-title">
+                    Title
+                  </label>
+                  <Input
+                    id="bookmark-title"
+                    className="h-9 rounded-md text-sm"
+                    value={bookmarkTitleValue}
+                    onChange={(event) => setBookmarkTitleValue(event.target.value)}
+                    required
+                  />
+                </div>
+                <DialogFooter>
+                  <button
+                    type="button"
+                    className="inline-flex h-9 items-center justify-center rounded-md px-3 text-sm text-muted-foreground hover:bg-muted"
+                    onClick={() => {
+                      setRenamingBookmark(null);
+                      setBookmarkTitleValue("");
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
+                    disabled={renameBookmarkMutation.isPending}
+                  >
+                    {renameBookmarkMutation.isPending ? (
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                    ) : null}
+                    {renameBookmarkMutation.isPending ? "Saving" : "Save title"}
                   </button>
                 </DialogFooter>
               </form>
@@ -952,6 +1300,12 @@ function AppIndex() {
             visibleRows.map((item) => {
               const isLink = item.contentType === "link";
               const host = isLink ? getHostFromUrl(item.url) : "";
+              const displayTitle = item.title || (isLink ? getDisplayLabelFromUrl(item.url) : item.url);
+              const isSearching = Boolean(search.trim());
+              const showMatchScore =
+                searchMode === "semantic" &&
+                isSearching &&
+                typeof item.matchScore === "number";
               const primaryFaviconUrl = host ? `https://icons.duckduckgo.com/ip3/${host}.ico` : "";
               const fallbackFaviconUrl = host
                 ? `https://www.google.com/s2/favicons?sz=64&domain=${encodeURIComponent(host)}`
@@ -964,7 +1318,7 @@ function AppIndex() {
                 >
                   <ContextMenu>
                     <ContextMenuTrigger className="block w-full rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
-                      <div className="grid grid-cols-[minmax(0,1fr)_86px] items-start gap-3 rounded-md px-2 py-2 transition-colors hover:bg-muted/40 data-[state=open]:bg-muted/50">
+                      <div className="grid grid-cols-[minmax(0,1fr)_86px] items-start gap-3 rounded-md px-2 py-2 transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 data-[state=open]:bg-muted/50">
                         <div className="flex min-w-0 items-start gap-2.5">
                           {isLink && host ? (
                             <img
@@ -1001,7 +1355,7 @@ function AppIndex() {
                                 rel="noreferrer"
                                 className="block truncate text-sm text-foreground hover:underline"
                               >
-                                {getDisplayLabelFromUrl(item.url)}
+                                {displayTitle}
                               </a>
                             ) : (
                               <button
@@ -1009,18 +1363,22 @@ function AppIndex() {
                                 className="block max-w-full truncate text-left text-sm text-foreground hover:underline"
                                 onClick={() => void copyBookmarkUrl(item.url)}
                               >
-                                {item.url}
+                                {displayTitle}
                               </button>
                             )}
-                            {/* <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
-                              <span className="truncate text-xs text-muted-foreground">
-                                {host || item.tag}
-                              </span>
-                              {item.folderName !== "default" ? <Kbd>{item.folderName}</Kbd> : null}
-                              {item.embeddingStatus !== "ready" ? (
-                                <Kbd className="uppercase">{item.embeddingStatus}</Kbd>
-                              ) : null}
-                            </div> */}
+                            {isSearching ? (
+                              <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
+                                <span className="truncate text-xs text-muted-foreground">
+                                  {host || item.tag}
+                                </span>
+                                {showMatchScore ? (
+                                  <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-full border bg-muted/60 px-2 text-[11px] font-medium text-muted-foreground">
+                                    <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                                    {item.matchScore === 100 ? "best match" : `${item.matchScore}% match`}
+                                  </span>
+                                ) : null}
+                              </div>
+                            ) : null}
                           </div>
                         </div>
                         <p className="pt-0.5 text-right text-xs text-muted-foreground">
@@ -1036,6 +1394,15 @@ function AppIndex() {
                         <ClipboardIcon />
                         {isLink ? "Copy URL" : "Copy Text"}
                       </ContextMenuItem>
+                      <ContextMenuItem
+                        onClick={() => {
+                          setRenamingBookmark(item);
+                          setBookmarkTitleValue(displayTitle);
+                        }}
+                      >
+                        <PencilIcon />
+                        Rename title
+                      </ContextMenuItem>
                       {isLink ? (
                         <ContextMenuItem
                           onClick={() => window.open(item.url, "_blank", "noopener,noreferrer")}
@@ -1044,8 +1411,15 @@ function AppIndex() {
                           Open Link
                         </ContextMenuItem>
                       ) : null}
-                      <ContextMenuItem onClick={refreshBookmarkRows}>
-                        <RefreshCwIcon />
+                      <ContextMenuItem
+                        disabled={refetchBookmarkMetadataMutation.isPending}
+                        onClick={() => refetchBookmarkMetadataMutation.mutate(item.id)}
+                      >
+                        {refetchBookmarkMetadataMutation.isPending ? (
+                          <Loader2Icon className="size-4 animate-spin" />
+                        ) : (
+                          <RefreshCwIcon />
+                        )}
                         Refetch metadata
                       </ContextMenuItem>
                       <ContextMenuSeparator />
@@ -1058,7 +1432,11 @@ function AppIndex() {
                         variant="destructive"
                         onClick={() => deleteBookmarkMutation.mutate(item.id)}
                       >
-                        <Trash2Icon />
+                        {deleteBookmarkMutation.isPending ? (
+                          <Loader2Icon className="size-4 animate-spin" />
+                        ) : (
+                          <Trash2Icon />
+                        )}
                         Delete
                       </ContextMenuItem>
                     </ContextMenuContent>

@@ -61,11 +61,12 @@ function formatBookmarkContext(rows: BookmarkRecord[]) {
       return [
         `Source ${index + 1}`,
         `type: ${row.contentType}`,
+        row.title ? `title: ${row.title}` : "",
         `${row.contentType === "link" ? "url" : "text"}: ${row.url}`,
         `tag: ${row.tag}`,
         `folder: ${row.folderName}`,
         `saved_at: ${toDateLabel(row.createdAt)}`,
-      ].join("\n");
+      ].filter(Boolean).join("\n");
     })
     .join("\n\n");
 }
