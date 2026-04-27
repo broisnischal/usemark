@@ -6,10 +6,11 @@ import {
   CircleHelpIcon,
   FileTextIcon,
   LogOutIcon,
+  MonitorIcon,
   MoonIcon,
+  PaletteIcon,
   Settings2Icon,
   SunIcon,
-  UserIcon,
 } from "lucide-react";
 
 import { useTheme } from "@/components/theme-provider";
@@ -17,8 +18,14 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { authClient } from "@/lib/auth/auth-client";
@@ -29,7 +36,7 @@ export const Route = createFileRoute("/_auth/app")({
 });
 
 function AppLayout() {
-  const { setTheme } = useTheme();
+  const { theme, setTheme } = useTheme();
   const queryClient = useQueryClient();
   const router = useRouter();
 
@@ -65,17 +72,28 @@ function AppLayout() {
           </Link>
 
           <DropdownMenu>
-            <DropdownMenuTrigger render={<Button variant="outline" size="icon-sm" />}>
-              <Settings2Icon />
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  className="size-9 rounded-full border-border/70 bg-muted/25 shadow-sm hover:bg-muted/50"
+                />
+              }
+            >
+              <Settings2Icon className="size-4" />
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
+            <DropdownMenuContent align="end" className="w-60">
+              <DropdownMenuGroup>
+                <DropdownMenuItem render={<Link to="/app/profile" />}>
+                  <Settings2Icon />
+                  Settings
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
               <DropdownMenuItem render={<Link to="/app" />}>
                 <BookmarkIcon />
                 Marks
-              </DropdownMenuItem>
-              <DropdownMenuItem render={<Link to="/app/profile" />}>
-                <UserIcon />
-                Profile
               </DropdownMenuItem>
               <DropdownMenuItem render={<Link to="/app/help" />}>
                 <CircleHelpIcon />
@@ -90,14 +108,31 @@ function AppLayout() {
                 Report bug
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => setTheme("light")}>
-                <SunIcon />
-                Light theme
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setTheme("dark")}>
-                <MoonIcon />
-                Dark theme
-              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <PaletteIcon />
+                  Theme
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent side="left" align="start" className="min-w-44">
+                  <DropdownMenuRadioGroup
+                    value={theme}
+                    onValueChange={(value) => setTheme(value as "dark" | "light" | "system")}
+                  >
+                    <DropdownMenuRadioItem value="light">
+                      <SunIcon />
+                      Light
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="dark">
+                      <MoonIcon />
+                      Dark
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="system">
+                      <MonitorIcon />
+                      System
+                    </DropdownMenuRadioItem>
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onClick={() => void signOut()}>
                 <LogOutIcon />

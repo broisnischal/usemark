@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { bookmark, bookmarkFolder, user } from "@/lib/db/schema";
 
 import { cosineSimilarity, embedText, getEmbeddingModelName, toEmbeddingText } from "./embeddings";
+import { GitHubApiError, listGitHubItemsForUser } from "./github";
 import { fetchBookmarkMetadata } from "./metadata";
 
 export type BookmarkContentType = "link" | "text";
@@ -1391,6 +1392,123 @@ export async function syncRssBookmarkFolder(
       await db.delete(bookmark).where(inArray(bookmark.id, deleteChunk));
     }
   }
+
+  return {
+    userId: folder.userId,
+    added: addedCount,
+    bookmarkIds: immediateResult.createdIds,
+    deferredItems: deferredCandidates,
+  };
+}
+
+const GITHUB_IMMEDIATE_INSERT_LIMIT = 25;
+
+/**
+ * Pull GitHub issues/PRs/releases for a live folder, insert bookmarks in one DB batch (immediate),
+ * and return the rest for background import + embedding (same pipeline as RSS).
+ */
+export async function syncGitHubBookmarkFolder(
+  folderId: string,
+  options: { immediateInsertLimit?: number } = {},
+) {
+  const folder = await db
+    .select()
+    .from(bookmarkFolder)
+    .where(and(eq(bookmarkFolder.id, folderId), eq(bookmarkFolder.sourceType, "github")))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!folder?.externalResourceId || !folder.syncEnabled) {
+    return {
+      userId: folder?.userId ?? null,
+      added: 0,
+      bookmarkIds: [] as string[],
+      deferredItems: [] as CreateBookmarksBatchInput[],
+    };
+  }
+
+  let items: Array<{
+    id: string;
+    url: string;
+    title: string;
+    type: string;
+    state: string | null;
+    author: string | null;
+    createdAt: string | null;
+    updatedAt: string | null;
+  }> = [];
+
+  try {
+    const result = await listGitHubItemsForUser(folder.userId, folder.id);
+    if (!result.connected) {
+      return {
+        userId: folder.userId,
+        added: 0,
+        bookmarkIds: [] as string[],
+        deferredItems: [] as CreateBookmarksBatchInput[],
+      };
+    }
+    items = result.items;
+  } catch (error) {
+    if (error instanceof GitHubApiError) {
+      throw error;
+    }
+    throw new Error("Could not fetch GitHub data for sync.");
+  }
+
+  const sourceIds = items.map((item) => `gh:${item.type}:${item.id}`);
+  const existingSourceItemIds = await listExistingSourceItemIdsForFolder(
+    folder.userId,
+    folder.id,
+    sourceIds,
+  );
+
+  const importCandidates: CreateBookmarksBatchInput[] = [];
+  for (const item of items) {
+    const sourceItemId = `gh:${item.type}:${item.id}`;
+    if (existingSourceItemIds.has(sourceItemId)) {
+      continue;
+    }
+
+    const normalized = normalizeBookmarkContent(item.url);
+    if (normalized.contentType !== "link") {
+      continue;
+    }
+
+    const noteParts = [item.type, item.state, item.author ? `@${item.author}` : ""].filter(Boolean);
+    importCandidates.push({
+      url: normalized.content,
+      title: item.title,
+      note: noteParts.length > 0 ? noteParts.join(" · ") : item.title,
+      folderId: folder.id,
+      folder: folder.name,
+      contentType: "link",
+      tag: getTagFromUrl(normalized.content),
+      sourceItemId,
+      seenAt: null,
+      createdAt: item.createdAt ? new Date(item.createdAt) : new Date(),
+    });
+    existingSourceItemIds.add(sourceItemId);
+  }
+
+  const immediateInsertLimit = Math.max(
+    0,
+    options.immediateInsertLimit ?? GITHUB_IMMEDIATE_INSERT_LIMIT,
+  );
+  const immediateCandidates = importCandidates.slice(0, immediateInsertLimit);
+  const deferredCandidates = importCandidates.slice(immediateInsertLimit);
+  const immediateResult = await createBookmarksBatchForUser(folder.userId, immediateCandidates, {
+    dedupeByUrlAndFolder: true,
+  });
+
+  const addedCount = immediateResult.createdIds.length;
+  await db
+    .update(bookmarkFolder)
+    .set({
+      lastSyncedAt: new Date(),
+      unseenCount: folder.unseenCount + addedCount,
+    })
+    .where(eq(bookmarkFolder.id, folder.id));
 
   return {
     userId: folder.userId,

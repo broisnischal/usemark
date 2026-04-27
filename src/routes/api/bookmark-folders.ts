@@ -8,6 +8,7 @@ import {
   listBookmarkFoldersForUser,
   markBookmarkFolderSeenForUser,
   pinBookmarkFolderForUser,
+  syncGitHubBookmarkFolder,
   syncRssBookmarkFolder,
   updateRssFolderSettingsForUser,
   type BookmarkFolderSourceType,
@@ -20,6 +21,7 @@ import {
 import { inngest } from "@/lib/inngest/client";
 
 const RSS_IMMEDIATE_INSERT_LIMIT = 15;
+const GITHUB_IMMEDIATE_INSERT_LIMIT = 25;
 
 async function queueBookmarkIndexEvents(bookmarkIds: string[]) {
   if (bookmarkIds.length === 0) {
@@ -80,6 +82,23 @@ async function runImmediateRssSync(folderId: string) {
 
 async function runRssSyncFastAndQueue(folderId: string) {
   const result = await runImmediateRssSync(folderId);
+  try {
+    await queueBookmarkIndexEvents(result.bookmarkIds);
+    await queueDeferredImportEvent(result.userId, folderId, result.deferredItems);
+  } catch {
+    // Avoid request-time heavy fallbacks in Worker runtime.
+  }
+  return result;
+}
+
+async function runImmediateGitHubSync(folderId: string) {
+  return syncGitHubBookmarkFolder(folderId, {
+    immediateInsertLimit: GITHUB_IMMEDIATE_INSERT_LIMIT,
+  });
+}
+
+async function runGitHubSyncFastAndQueue(folderId: string) {
+  const result = await runImmediateGitHubSync(folderId);
   try {
     await queueBookmarkIndexEvents(result.bookmarkIds);
     await queueDeferredImportEvent(result.userId, folderId, result.deferredItems);
@@ -203,6 +222,10 @@ export const Route = createFileRoute("/api/bookmark-folders")({
           await runRssSyncFastAndQueue(folder.id);
         }
 
+        if (folder.sourceType === "github") {
+          await runGitHubSyncFastAndQueue(folder.id);
+        }
+
         return Response.json(folder, { status: 201 });
       },
       PATCH: async ({ request }) => {
@@ -271,7 +294,14 @@ export const Route = createFileRoute("/api/bookmark-folders")({
           }
 
           if (folder.sourceType === "github") {
-            return Response.json({ success: true, id: folderId, sourceType: folder.sourceType });
+            const result = await runGitHubSyncFastAndQueue(folder.id);
+            return Response.json({
+              success: true,
+              id: folderId,
+              sourceType: folder.sourceType,
+              importedNow: result.added,
+              queued: result.deferredItems.length,
+            });
           }
 
           return Response.json(

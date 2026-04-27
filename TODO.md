@@ -89,3 +89,19 @@ i can delete the rss one indivual and in next sync it should not come that again
 able to show the user's repostiory when connecting to the github, then user selects that, and select type , or users add the repo url and use the other, github
 
 medium feed connect, daily.dev if possible and the dev.to
+
+rss, feed browser, import, and so on, with categorization, like dev, blogs, news, and so on, and can import by user,
+
+email verification, mail send to user about their feeds, use durable obejct or seomthing worker,
+
+use the hyperdrive for cahing and better fetching,
+
+use the cloudflare vector for better vector database,
+
+bulid the proper landinga and marketing page for this,
+
+fix the deploymeent issue and the issue of inngest in the server
+
+submit the blog to hacker news, feature,
+
+and many more

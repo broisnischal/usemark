@@ -108,6 +108,8 @@ export const Route = createFileRoute("/api/profile")({
             github: Boolean(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET),
             google: Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
             x: Boolean(env.X_CLIENT_ID && env.X_CLIENT_SECRET),
+            medium: true,
+            devto: true,
           },
         });
       },

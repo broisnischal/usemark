@@ -5,6 +5,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import Fuse from "fuse.js";
 import {
   BookOpenIcon,
+  CheckIcon,
   CheckSquareIcon,
   ChevronDownIcon,
   ClipboardIcon,
@@ -17,6 +18,7 @@ import {
   FolderIcon,
   GitPullRequestIcon,
   GlobeIcon,
+  ListTodoIcon,
   Loader2Icon,
   LockIcon,
   PencilIcon,
@@ -65,7 +67,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
 import { authClient } from "@/lib/auth/auth-client";
 import type {
   BookmarkContentType,
@@ -79,13 +80,12 @@ import {
   bookmarkSearchQueryOptions,
   bookmarksQueryKey,
   bookmarksQueryOptions,
-  githubItemsQueryKey,
-  githubItemsQueryOptions,
   githubReposQueryKey,
   githubReposQueryOptions,
   xBookmarksQueryKey,
   xBookmarksQueryOptions,
 } from "@/lib/bookmarks/queries";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_auth/app/")({
   component: AppIndex,
@@ -128,6 +128,119 @@ function compareBookmarkFolders(first: BookmarkFolderRecord, second: BookmarkFol
     return first.isPinned ? -1 : 1;
   }
   return first.name.localeCompare(second.name, undefined, { sensitivity: "base" });
+}
+
+/** Fixed display width avoids column jump between loading, empty, and varying date strings. */
+const CREATED_AT_COL_W = "10rem";
+
+function getCreatedAtDisplay(iso: string | null | undefined) {
+  if (!iso) {
+    return null;
+  }
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  const datePart = parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const hh = String(parsed.getHours()).padStart(2, "0");
+  const mm = String(parsed.getMinutes()).padStart(2, "0");
+  return {
+    iso,
+    datePart,
+    timeStr: `${hh}:${mm}`,
+    title: parsed.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
+  };
+}
+
+function CreatedAtCell({
+  iso,
+  inheritLinkTint,
+}: {
+  iso: string | null | undefined;
+  /** When the row is an `<a href>`, inherit `visited:` text color from the anchor for the date line. */
+  inheritLinkTint?: boolean;
+}) {
+  const value = getCreatedAtDisplay(iso);
+  return (
+    <div className="flex w-full justify-end self-center">
+      {value ? (
+        <time
+          dateTime={value.iso}
+          title={value.title}
+          className={cn(
+            "inline-block shrink-0 text-right text-xs leading-none whitespace-nowrap [font-variant-numeric:tabular-nums]",
+            inheritLinkTint ? "text-inherit" : "text-muted-foreground",
+          )}
+          style={{ width: CREATED_AT_COL_W }}
+        >
+          <span
+            className={cn("font-medium", inheritLinkTint ? "text-inherit" : "text-foreground/90")}
+          >
+            {value.datePart}
+          </span>
+          <span aria-hidden> | </span>
+          <span>{value.timeStr}</span>
+        </time>
+      ) : (
+        <span className="inline-block shrink-0" style={{ width: CREATED_AT_COL_W }} aria-hidden />
+      )}
+    </div>
+  );
+}
+
+function isSafeExternalBookmarkHref(url: string) {
+  try {
+    const parsed = new URL(url.trim());
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Use a real `<a href>` for external link rows so `:visited` matches the browser history (native
+ * visited styling). Falls back to `<button>` for todo mode, selection mode, or non-http(s) URLs.
+ */
+function BookmarkRowInteractive({
+  useAnchor,
+  href,
+  className,
+  onButtonClick,
+  onButtonKeyDown,
+  children,
+}: {
+  useAnchor: boolean;
+  href: string;
+  className: string;
+  onButtonClick: () => void;
+  onButtonKeyDown: (event: React.KeyboardEvent<HTMLElement>) => void;
+  children: React.ReactNode;
+}) {
+  const safeHref = href.trim();
+  if (useAnchor && safeHref) {
+    return (
+      <a
+        href={safeHref}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={className}
+        onKeyDown={(event) => {
+          if (event.key === " ") {
+            event.preventDefault();
+            window.open(safeHref, "_blank", "noopener,noreferrer");
+          }
+        }}
+      >
+        {children}
+      </a>
+    );
+  }
+
+  return (
+    <button type="button" className={className} onClick={onButtonClick} onKeyDown={onButtonKeyDown}>
+      {children}
+    </button>
+  );
 }
 
 function readStoredSearchState() {
@@ -634,10 +747,6 @@ function bookmarkBelongsInListCache(row: BookmarkRecord, queryKey: readonly unkn
   return folderKey === "all" || folderKey === row.folderId;
 }
 
-async function delay(ms: number) {
-  await new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
 function getFolderSourceLabel(sourceType: BookmarkFolderSourceType) {
   if (sourceType === "todo") {
     return "Todo";
@@ -679,11 +788,13 @@ function hasRepoScope(scope: string | null | undefined) {
     return false;
   }
 
-  return scope
+  const tokens = scope
     .split(/[,\s]+/)
     .map((value) => value.trim().toLowerCase())
-    .filter(Boolean)
-    .includes("repo");
+    .filter(Boolean);
+  return tokens.some(
+    (token) => token === "repo" || token === "public_repo" || token.startsWith("repo:"),
+  );
 }
 
 function isTodoFolderName(name: string) {
@@ -699,6 +810,12 @@ function isTodoFolderName(name: string) {
   );
 }
 
+function isTodoFolderRecord(folder: Pick<BookmarkFolderRecord, "name" | "sourceType">) {
+  return (
+    folder.sourceType === "todo" || (folder.sourceType === "local" && isTodoFolderName(folder.name))
+  );
+}
+
 function getFolderDisplayName(folder: Pick<BookmarkFolderRecord, "name" | "sourceType">) {
   if (folder.sourceType === "todo" && folder.name.toLowerCase().startsWith("todo:")) {
     const withoutPrefix = folder.name.slice("todo:".length).trim();
@@ -707,24 +824,172 @@ function getFolderDisplayName(folder: Pick<BookmarkFolderRecord, "name" | "sourc
   return folder.name;
 }
 
-function FolderSourceIcon({ sourceType }: { sourceType: BookmarkFolderSourceType }) {
-  if (sourceType === "todo") {
-    return <CheckSquareIcon className="size-3.5" />;
+function FolderSourceIcon({
+  folder,
+}: {
+  folder: Pick<BookmarkFolderRecord, "name" | "sourceType">;
+}) {
+  if (isTodoFolderRecord(folder)) {
+    return <ListTodoIcon className="size-3.5" />;
   }
-  if (sourceType === "github") {
+  if (folder.sourceType === "github") {
     return <SiGithub className="size-3.5" />;
   }
-  if (sourceType === "x") {
+  if (folder.sourceType === "x") {
     return <SiX className="size-3.5" />;
   }
-  if (sourceType === "reddit") {
+  if (folder.sourceType === "reddit") {
     return <SiReddit className="size-3.5" />;
   }
-  if (sourceType === "rss") {
+  if (folder.sourceType === "rss") {
     return <RssIcon className="size-3.5" />;
   }
 
   return <FolderIcon className="size-3.5" />;
+}
+
+/** Shared styles for marks folder picker chips (wrap, no horizontal scroll). */
+const MARKS_FOLDER_CHIP_CLASS =
+  "inline-flex h-9 max-w-56 min-w-0 shrink-0 items-center gap-2 rounded-lg bg-muted/15 px-2.5 text-[15px] text-foreground transition-colors hover:bg-muted/35 aria-pressed:bg-primary/10 data-[popup-open]:bg-muted/40";
+
+type MarksFolderPickerChipProps = {
+  folder: BookmarkFolderRecord;
+  isActive: boolean;
+  onSelect: () => void;
+  onPrefetch: () => void;
+  pinFolderMutation: { isPending: boolean; mutate: (id: string) => void };
+  syncFolderMutation: { isPending: boolean; mutate: (id: string) => void };
+  markFolderSeenMutation: { mutate: (id: string) => void };
+  deleteFolderMutation: { isPending: boolean; mutate: (id: string) => void };
+  onOpenRssSettings: () => void;
+  onExportJson: () => void | Promise<void>;
+  onExportCsv: () => void | Promise<void>;
+  onImport: () => void;
+  onDelete: () => void;
+};
+
+function MarksFolderPickerChip({
+  folder,
+  isActive,
+  onSelect,
+  onPrefetch,
+  pinFolderMutation,
+  syncFolderMutation,
+  markFolderSeenMutation,
+  deleteFolderMutation,
+  onOpenRssSettings,
+  onExportJson,
+  onExportCsv,
+  onImport,
+  onDelete,
+}: MarksFolderPickerChipProps) {
+  const baseTitle =
+    folder.sourceType === "local" || folder.sourceType === "todo"
+      ? getFolderDisplayName(folder)
+      : `${getFolderSourceLabel(folder.sourceType)} live folder`;
+  const title = `${baseTitle} · Right-click for folder actions`;
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger
+        render={
+          <button
+            type="button"
+            className={cn(
+              MARKS_FOLDER_CHIP_CLASS,
+              "outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+            )}
+            aria-pressed={isActive}
+            title={title}
+            onClick={onSelect}
+            onFocus={onPrefetch}
+            onMouseEnter={onPrefetch}
+          />
+        }
+      >
+        <span className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground">
+          <FolderSourceIcon folder={folder} />
+        </span>
+        <span className="min-w-0 truncate">{getFolderDisplayName(folder)}</span>
+        {folder.isPinned ? (
+          <PinIcon className="size-3 shrink-0 fill-current text-muted-foreground" />
+        ) : null}
+        {folder.syncEnabled ? (
+          <span className="ml-0.5 size-1.5 shrink-0 rounded-full bg-emerald-500" title="Sync on" />
+        ) : null}
+        {folder.unseenCount > 0 ? (
+          <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] text-primary-foreground">
+            {folder.unseenCount}
+          </span>
+        ) : null}
+      </ContextMenuTrigger>
+      <ContextMenuContent className="min-w-52">
+        <ContextMenuItem
+          disabled={folder.isPinned || pinFolderMutation.isPending}
+          onClick={() => pinFolderMutation.mutate(folder.id)}
+        >
+          {pinFolderMutation.isPending ? (
+            <Loader2Icon className="size-4 animate-spin" />
+          ) : (
+            <PinIcon />
+          )}
+          {folder.isPinned ? "Pinned" : "Pin folder"}
+        </ContextMenuItem>
+        {folder.sourceType !== "local" ? (
+          <ContextMenuItem
+            disabled={syncFolderMutation.isPending}
+            onClick={() => syncFolderMutation.mutate(folder.id)}
+          >
+            {syncFolderMutation.isPending ? (
+              <Loader2Icon className="size-4 animate-spin" />
+            ) : (
+              <RefreshCwIcon />
+            )}
+            Sync now
+          </ContextMenuItem>
+        ) : null}
+        {folder.sourceType === "rss" ? (
+          <ContextMenuItem onClick={onOpenRssSettings}>
+            <SlidersHorizontalIcon />
+            RSS sync settings
+          </ContextMenuItem>
+        ) : null}
+        <ContextMenuItem
+          disabled={folder.unseenCount === 0}
+          onClick={() => markFolderSeenMutation.mutate(folder.id)}
+        >
+          <CheckSquareIcon />
+          Mark as seen
+        </ContextMenuItem>
+        {folder.sourceType === "local" ? (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onClick={() => void onExportJson()}>
+              <DownloadIcon />
+              Export JSON
+            </ContextMenuItem>
+            <ContextMenuItem onClick={() => void onExportCsv()}>
+              <DownloadIcon />
+              Export CSV
+            </ContextMenuItem>
+            <ContextMenuItem onClick={onImport}>
+              <UploadIcon />
+              Import JSON/CSV
+            </ContextMenuItem>
+          </>
+        ) : null}
+        <ContextMenuSeparator />
+        <HoldToDelete
+          mode="menu-item"
+          disabled={folder.name === "default" || deleteFolderMutation.isPending}
+          isPending={deleteFolderMutation.isPending}
+          onDelete={onDelete}
+        >
+          Delete folder
+        </HoldToDelete>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
 }
 
 function useDebouncedValue<TValue>(value: TValue, delayMs: number) {
@@ -823,7 +1088,7 @@ function AppIndex() {
   const [renamingBookmark, setRenamingBookmark] = React.useState<BookmarkRecord | null>(null);
   const [rssFeedUrl, setRssFeedUrl] = React.useState("");
   const [githubRepoValue, setGithubRepoValue] = React.useState("");
-  const [selectedGitHubRepo, setSelectedGitHubRepo] = React.useState("");
+  const [githubRepoListSearch, setGithubRepoListSearch] = React.useState("");
   const [githubResourceType, setGithubResourceType] = React.useState<GitHubResourceType>("all");
   const [rssSyncIntervalMinutesInput, setRssSyncIntervalMinutesInput] = React.useState("30");
   const [rssFetchLimitInput, setRssFetchLimitInput] = React.useState("100");
@@ -865,7 +1130,7 @@ function AppIndex() {
   const settingsFolder = folders.find((folder) => folder.id === settingsFolderId) ?? null;
   const isXFolderSelected = selectedFolder?.sourceType === "x";
   const isGitHubFolderSelected = selectedFolder?.sourceType === "github";
-  const isTodoFolderSelected = selectedFolder?.sourceType === "todo";
+  const isTodoFolderSelected = selectedFolder ? isTodoFolderRecord(selectedFolder) : false;
   const bookmarkPaginationScope = [activeFolderId ?? "all", searchMode, search].join(":");
   const bookmarkFetchLimit =
     rowPagination.scope === bookmarkPaginationScope
@@ -874,7 +1139,7 @@ function AppIndex() {
   const bookmarksQuery = useQuery(
     bookmarksQueryOptions(
       activeFolderId,
-      Boolean(foldersQuery.data) && !isXFolderSelected && !isGitHubFolderSelected,
+      Boolean(foldersQuery.data) && !isXFolderSelected,
       bookmarkFetchLimit,
     ),
   );
@@ -884,9 +1149,6 @@ function AppIndex() {
     placeholderData: (previousData) => previousData,
   });
   const xBookmarksQuery = useQuery(xBookmarksQueryOptions(isXFolderSelected));
-  const githubItemsQuery = useQuery(
-    githubItemsQueryOptions(isGitHubFolderSelected ? activeFolderId : null),
-  );
   const githubConnectionQuery = useQuery({
     queryKey: ["profile", "github-connection"] as const,
     enabled: isGitHubFolderDialogOpen,
@@ -914,9 +1176,18 @@ function AppIndex() {
   const hasGitHubConnection = Boolean(githubAccount);
   const hasGitHubRepoScope = hasRepoScope(githubAccount?.scope);
   const githubReposQuery = useQuery(
-    githubReposQueryOptions(isGitHubFolderDialogOpen && hasGitHubConnection && hasGitHubRepoScope),
+    githubReposQueryOptions(isGitHubFolderDialogOpen && hasGitHubConnection),
   );
   const refetchGitHubRepos = githubReposQuery.refetch;
+
+  const filteredGithubRepos = React.useMemo(() => {
+    const list = githubReposQuery.data?.repos ?? [];
+    const query = githubRepoListSearch.trim().toLowerCase();
+    if (!query) {
+      return list;
+    }
+    return list.filter((repo) => repo.fullName.toLowerCase().includes(query));
+  }, [githubRepoListSearch, githubReposQuery.data?.repos]);
 
   React.useEffect(() => {
     if (
@@ -929,7 +1200,7 @@ function AppIndex() {
   }, [folders, foldersQuery.isLoading, selectedFolderId, setSelectedFolderId]);
 
   React.useEffect(() => {
-    if (!selectedFolder || !selectedFolder.isPinned) {
+    if (!selectedFolder) {
       return;
     }
 
@@ -950,7 +1221,7 @@ function AppIndex() {
       }
 
       if (folder.sourceType === "github") {
-        void queryClient.prefetchQuery(githubItemsQueryOptions(folder.id));
+        void queryClient.prefetchQuery(bookmarksQueryOptions(folder.id, true, ROW_PAGE_SIZE * 2));
         return;
       }
 
@@ -1564,31 +1835,25 @@ function AppIndex() {
       if (folder.sourceType !== "local" && folder.sourceType !== "todo") {
         void (async () => {
           await queryClient.invalidateQueries({ queryKey: bookmarkFoldersQueryKey });
-          for (const waitMs of [350, 900, 1800, 3200]) {
-            await delay(waitMs);
-            if (folder.sourceType === "github") {
-              await Promise.all([
-                queryClient.invalidateQueries({ queryKey: [...githubItemsQueryKey, folder.id] }),
-                queryClient.invalidateQueries({ queryKey: githubReposQueryKey }),
-                queryClient.invalidateQueries({ queryKey: bookmarkFoldersQueryKey }),
-              ]);
-              continue;
-            }
-            if (folder.sourceType === "x") {
-              await Promise.all([
-                queryClient.invalidateQueries({ queryKey: xBookmarksQueryKey }),
-                queryClient.invalidateQueries({ queryKey: bookmarkFoldersQueryKey }),
-              ]);
-              continue;
-            }
+          if (folder.sourceType === "github") {
             await Promise.all([
-              queryClient.invalidateQueries({
-                queryKey: [...bookmarksQueryKey, "list", folder.id],
-              }),
               queryClient.invalidateQueries({ queryKey: bookmarksQueryKey }),
+              queryClient.invalidateQueries({ queryKey: githubReposQueryKey }),
               queryClient.invalidateQueries({ queryKey: bookmarkFoldersQueryKey }),
             ]);
+            return;
           }
+          if (folder.sourceType === "x") {
+            await Promise.all([
+              queryClient.invalidateQueries({ queryKey: xBookmarksQueryKey }),
+              queryClient.invalidateQueries({ queryKey: bookmarkFoldersQueryKey }),
+            ]);
+            return;
+          }
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: bookmarksQueryKey }),
+            queryClient.invalidateQueries({ queryKey: bookmarkFoldersQueryKey }),
+          ]);
         })();
       }
     },
@@ -1603,11 +1868,11 @@ function AppIndex() {
   });
 
   React.useEffect(() => {
-    if (!isGitHubFolderDialogOpen || !hasGitHubConnection || !hasGitHubRepoScope) {
+    if (!isGitHubFolderDialogOpen || !hasGitHubConnection) {
       return;
     }
     void refetchGitHubRepos();
-  }, [hasGitHubConnection, hasGitHubRepoScope, isGitHubFolderDialogOpen, refetchGitHubRepos]);
+  }, [hasGitHubConnection, isGitHubFolderDialogOpen, refetchGitHubRepos]);
 
   const markFolderSeenMutation = useMutation({
     mutationFn: async (folderId: string) => {
@@ -1745,7 +2010,7 @@ function AppIndex() {
           ? queryClient.invalidateQueries({ queryKey: xBookmarksQueryKey })
           : Promise.resolve(),
         result.sourceType === "github"
-          ? queryClient.invalidateQueries({ queryKey: githubItemsQueryKey })
+          ? queryClient.invalidateQueries({ queryKey: bookmarksQueryKey })
           : Promise.resolve(),
       ]);
     },
@@ -2216,12 +2481,12 @@ function AppIndex() {
     defaultFolder ??
     manualFolders[0] ??
     null;
-  const visibleRows =
-    isXFolderSelected || isGitHubFolderSelected
-      ? []
-      : activeFolderId
-        ? fetchedRows.filter((row) => row.folderId === activeFolderId)
-        : fetchedRows;
+  const isTodoAddTarget = addFolder ? isTodoFolderRecord(addFolder) : false;
+  const visibleRows = isXFolderSelected
+    ? []
+    : activeFolderId
+      ? fetchedRows.filter((row) => row.folderId === activeFolderId)
+      : fetchedRows;
   const selectedBookmarkIdSet = React.useMemo(
     () => new Set(selectedBookmarkIds),
     [selectedBookmarkIds],
@@ -2240,69 +2505,42 @@ function AppIndex() {
       .toLowerCase()
       .includes(normalizedSearchLower);
   });
-  const githubRows = (githubItemsQuery.data?.items ?? []).filter((row) => {
-    if (!isGitHubFolderSelected || !normalizedSearchLower) {
-      return true;
-    }
-
-    return [row.title, row.author ?? "", row.state ?? "", row.type]
-      .join(" ")
-      .toLowerCase()
-      .includes(normalizedSearchLower);
-  });
   const liveFolderSourceTypes = new Set(
     folders.filter((folder) => folder.sourceType !== "local").map((folder) => folder.sourceType),
   );
-  const primaryFolders = folders.slice(0, 5);
-  const overflowFolders = folders.filter(
-    (folder) => !primaryFolders.some((item) => item.id === folder.id),
-  );
+  /** First four sorted folders for Alt+1–4 (same order as on-screen chips). */
+  const folderHotkeyTargets = folders.slice(0, 4);
   const isLoadingRows = isXFolderSelected
     ? xBookmarksQuery.isLoading
-    : isGitHubFolderSelected
-      ? githubItemsQuery.isLoading
-      : search.trim() && searchMode === "semantic"
-        ? searchQuery.isLoading
-        : bookmarksQuery.isLoading;
+    : search.trim() && searchMode === "semantic"
+      ? searchQuery.isLoading
+      : bookmarksQuery.isLoading;
   const isRefreshingRows = isXFolderSelected
     ? xBookmarksQuery.isFetching
-    : isGitHubFolderSelected
-      ? githubItemsQuery.isFetching
-      : search.trim() && searchMode === "semantic"
-        ? searchQuery.isFetching
-        : bookmarksQuery.isFetching;
+    : search.trim() && searchMode === "semantic"
+      ? searchQuery.isFetching
+      : bookmarksQuery.isFetching;
   const rowPaginationScope = [
-    isXFolderSelected ? "x" : isGitHubFolderSelected ? "github" : "bookmarks",
+    isXFolderSelected ? "x" : "bookmarks",
     activeFolderId ?? "all",
     searchMode,
     search,
   ].join(":");
   const visibleRowLimit =
     rowPagination.scope === rowPaginationScope ? rowPagination.limit : ROW_PAGE_SIZE;
-  const totalVisibleRows = isXFolderSelected
-    ? xRows.length
-    : isGitHubFolderSelected
-      ? githubRows.length
-      : visibleRows.length;
+  const totalVisibleRows = isXFolderSelected ? xRows.length : visibleRows.length;
   const hasMoreRows = totalVisibleRows > visibleRowLimit;
   const hasMoreBookmarkRowsFromServer =
     !isXFolderSelected &&
-    !isGitHubFolderSelected &&
     !isLoadingRows &&
     (bookmarksQuery.data?.length ?? 0) >= bookmarkFetchLimit;
   const hasMoreRowsWithPagination = hasMoreRows || hasMoreBookmarkRowsFromServer;
   const displayedXRows = xRows.slice(0, visibleRowLimit);
-  const displayedGitHubRows = githubRows.slice(0, visibleRowLimit);
   const displayedVisibleRows = visibleRows.slice(0, visibleRowLimit);
-  const displayedRowCount = isXFolderSelected
-    ? displayedXRows.length
-    : isGitHubFolderSelected
-      ? displayedGitHubRows.length
-      : displayedVisibleRows.length;
+  const displayedRowCount = isXFolderSelected ? displayedXRows.length : displayedVisibleRows.length;
   const [virtualListRef, virtualStart, virtualEnd, virtualPaddingTop, virtualPaddingBottom] =
     useWindowVirtualRange(displayedRowCount, rowPaginationScope);
   const virtualDisplayedXRows = displayedXRows.slice(virtualStart, virtualEnd);
-  const virtualDisplayedGitHubRows = displayedGitHubRows.slice(virtualStart, virtualEnd);
   const virtualDisplayedVisibleRows = displayedVisibleRows.slice(virtualStart, virtualEnd);
 
   React.useEffect(() => {
@@ -2376,16 +2614,16 @@ function AppIndex() {
 
   useHotkey("Alt+0", () => setSelectedFolderId(null));
   useHotkey("Alt+1", () => {
-    setSelectedFolderId(primaryFolders[0]?.id ?? null);
+    setSelectedFolderId(folderHotkeyTargets[0]?.id ?? null);
   });
   useHotkey("Alt+2", () => {
-    setSelectedFolderId(primaryFolders[1]?.id ?? null);
+    setSelectedFolderId(folderHotkeyTargets[1]?.id ?? null);
   });
   useHotkey("Alt+3", () => {
-    setSelectedFolderId(primaryFolders[2]?.id ?? null);
+    setSelectedFolderId(folderHotkeyTargets[2]?.id ?? null);
   });
   useHotkey("Alt+4", () => {
-    setSelectedFolderId(primaryFolders[3]?.id ?? null);
+    setSelectedFolderId(folderHotkeyTargets[3]?.id ?? null);
   });
 
   useHotkey({ key: "/", shift: true }, () => {
@@ -2443,24 +2681,31 @@ function AppIndex() {
                 type="button"
                 className="ml-1 inline-flex h-9 max-w-40 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground"
               >
-                <FolderIcon className="size-3.5" />
+                {addFolder ? (
+                  <FolderSourceIcon folder={addFolder} />
+                ) : (
+                  <FolderIcon className="size-3.5" />
+                )}
                 <span className="truncate">
                   {addFolder ? getFolderDisplayName(addFolder) : "default"}
                 </span>
                 <ChevronDownIcon className="size-3.5" />
               </DropdownMenuTrigger>
-              <DropdownMenuContent className="w-56 rounded-lg p-1" align="start">
+              <DropdownMenuContent className="w-56" align="start">
                 {manualFolders.length > 0 ? (
                   manualFolders.map((folder) => (
                     <DropdownMenuItem
                       key={folder.id}
                       className="gap-2"
-                      onClick={() => setAddFolderId(folder.id)}
+                      onClick={() => {
+                        setAddFolderId(folder.id);
+                        setSelectedFolderId(folder.id);
+                      }}
                     >
-                      <FolderIcon className="size-3.5" />
+                      <FolderSourceIcon folder={folder} />
                       <span className="truncate">{getFolderDisplayName(folder)}</span>
                       {addFolder?.id === folder.id ? (
-                        <CheckSquareIcon className="ml-auto size-3.5 text-muted-foreground" />
+                        <CheckIcon className="ml-auto size-3.5 text-muted-foreground" />
                       ) : null}
                     </DropdownMenuItem>
                   ))
@@ -2481,7 +2726,7 @@ function AppIndex() {
               ref={bookmarkInputRef}
               className="h-11 min-w-0 flex-1 rounded-none border-0 bg-transparent px-2 text-sm shadow-none focus-visible:ring-0"
               placeholder={
-                isTodoFolderSelected
+                isTodoAddTarget
                   ? "Add your todo task..."
                   : searchMode === "semantic"
                     ? "Add a bookmark, or search semantically..."
@@ -2507,7 +2752,7 @@ function AppIndex() {
                   {searchMode === "semantic" ? "semantic" : searchMode}
                 </span>
               </DropdownMenuTrigger>
-              <DropdownMenuContent className="w-52 rounded-lg p-1" align="end">
+              <DropdownMenuContent className="w-52" align="end">
                 <DropdownMenuItem className="gap-2" onClick={() => setSearchMode("semantic")}>
                   <SparklesIcon className="size-3.5" />
                   <span>Semantic search</span>
@@ -2596,10 +2841,10 @@ function AppIndex() {
 
         <div className="my-4 flex flex-wrap items-center gap-2">
           {foldersQuery.isLoading
-            ? Array.from({ length: 3 }).map((_, index) => (
+            ? Array.from({ length: 5 }).map((_, index) => (
                 <div
                   key={`folder-skeleton-${index}`}
-                  className="frappe-shimmer h-8 w-24 rounded-md border bg-muted/45"
+                  className="frappe-shimmer h-9 w-28 shrink-0 rounded-lg bg-muted/30"
                 />
               ))
             : null}
@@ -2607,178 +2852,53 @@ function AppIndex() {
           {!foldersQuery.isLoading ? (
             <button
               type="button"
-              className="inline-flex h-9 items-center gap-2 rounded-md border bg-background px-3 text-[15px] text-foreground shadow-sm shadow-foreground/5 transition-all hover:-translate-y-px hover:bg-muted/60 aria-pressed:bg-muted"
+              className={cn(
+                MARKS_FOLDER_CHIP_CLASS,
+                "bg-transparent hover:bg-muted/25",
+                !activeFolderId && "bg-primary/10",
+              )}
               aria-pressed={!activeFolderId}
               onClick={() => setSelectedFolderId(null)}
               onFocus={prefetchAllRows}
               onMouseEnter={prefetchAllRows}
             >
-              <FolderIcon className="size-3.5 text-muted-foreground" />
-              All
+              <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="font-medium">All</span>
             </button>
           ) : null}
 
-          {!foldersQuery.isLoading &&
-            primaryFolders.map((folder) => (
-              <ContextMenu key={folder.id}>
-                <ContextMenuTrigger className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
-                  <button
-                    type="button"
-                    className="inline-flex h-9 max-w-56 items-center gap-2 rounded-md border bg-background px-3 text-[15px] text-foreground shadow-sm shadow-foreground/5 transition-all hover:-translate-y-px hover:bg-muted/60 aria-pressed:bg-muted data-[state=open]:bg-muted"
-                    aria-pressed={activeFolderId === folder.id}
-                    onFocus={() => prefetchFolderRows(folder)}
-                    onMouseEnter={() => prefetchFolderRows(folder)}
-                    onClick={() => {
-                      setSelectedFolderId(folder.id);
-                      if (folder.unseenCount > 0) {
-                        markFolderSeenMutation.mutate(folder.id);
-                      }
-                    }}
-                    title={
-                      folder.sourceType === "local" || folder.sourceType === "todo"
-                        ? getFolderDisplayName(folder)
-                        : `${getFolderSourceLabel(folder.sourceType)} live folder`
+          {!foldersQuery.isLoading
+            ? folders.map((folder) => (
+                <MarksFolderPickerChip
+                  key={folder.id}
+                  folder={folder}
+                  isActive={activeFolderId === folder.id}
+                  onSelect={() => {
+                    setSelectedFolderId(folder.id);
+                    if (folder.unseenCount > 0) {
+                      markFolderSeenMutation.mutate(folder.id);
                     }
-                  >
-                    <span className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground">
-                      <FolderSourceIcon sourceType={folder.sourceType} />
-                    </span>
-                    <span className="truncate">{getFolderDisplayName(folder)}</span>
-                    {folder.isPinned ? (
-                      <PinIcon className="size-3 shrink-0 fill-current text-muted-foreground" />
-                    ) : null}
-                    {folder.syncEnabled ? (
-                      <span className="ml-0.5 size-1.5 shrink-0 rounded-full bg-emerald-500" />
-                    ) : null}
-                    {folder.unseenCount > 0 ? (
-                      <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] text-primary-foreground">
-                        {folder.unseenCount}
-                      </span>
-                    ) : null}
-                  </button>
-                </ContextMenuTrigger>
-                <ContextMenuContent className="min-w-44 rounded-lg p-1">
-                  <ContextMenuItem
-                    disabled={folder.isPinned || pinFolderMutation.isPending}
-                    onClick={() => pinFolderMutation.mutate(folder.id)}
-                  >
-                    {pinFolderMutation.isPending ? (
-                      <Loader2Icon className="size-4 animate-spin" />
-                    ) : (
-                      <PinIcon />
-                    )}
-                    {folder.isPinned ? "Pinned" : "Pin folder"}
-                  </ContextMenuItem>
-                  {folder.sourceType !== "local" ? (
-                    <ContextMenuItem
-                      disabled={syncFolderMutation.isPending}
-                      onClick={() => syncFolderMutation.mutate(folder.id)}
-                    >
-                      {syncFolderMutation.isPending ? (
-                        <Loader2Icon className="size-4 animate-spin" />
-                      ) : (
-                        <RefreshCwIcon />
-                      )}
-                      Sync now
-                    </ContextMenuItem>
-                  ) : null}
-                  {folder.sourceType === "rss" ? (
-                    <ContextMenuItem onClick={() => openRssSettingsDialog(folder)}>
-                      <SlidersHorizontalIcon />
-                      RSS sync settings
-                    </ContextMenuItem>
-                  ) : null}
-                  <ContextMenuItem
-                    disabled={folder.unseenCount === 0}
-                    onClick={() => markFolderSeenMutation.mutate(folder.id)}
-                  >
-                    <CheckSquareIcon />
-                    Mark as seen
-                  </ContextMenuItem>
-                  {folder.sourceType === "local" ? (
-                    <>
-                      <ContextMenuSeparator />
-                      <ContextMenuItem onClick={() => void exportFolderBookmarks(folder, "json")}>
-                        <DownloadIcon />
-                        Export JSON
-                      </ContextMenuItem>
-                      <ContextMenuItem onClick={() => void exportFolderBookmarks(folder, "csv")}>
-                        <DownloadIcon />
-                        Export CSV
-                      </ContextMenuItem>
-                      <ContextMenuItem onClick={() => promptImportBookmarks(folder.id)}>
-                        <UploadIcon />
-                        Import JSON/CSV
-                      </ContextMenuItem>
-                    </>
-                  ) : null}
-                  <ContextMenuSeparator />
-                  <HoldToDelete
-                    mode="menu-item"
-                    disabled={folder.name === "default" || deleteFolderMutation.isPending}
-                    isPending={deleteFolderMutation.isPending}
-                    onDelete={() => deleteFolderMutation.mutate(folder.id)}
-                  >
-                    Delete folder
-                  </HoldToDelete>
-                </ContextMenuContent>
-              </ContextMenu>
-            ))}
-
-          {!foldersQuery.isLoading && overflowFolders.length > 0 ? (
-            <div className="w-full rounded-md border bg-muted/20 p-2">
-              <div className="mb-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
-                <FolderIcon className="size-3.5" />
-                More folders
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {overflowFolders.map((folder) => (
-                  <button
-                    key={folder.id}
-                    type="button"
-                    className="inline-flex h-9 max-w-56 items-center gap-2 rounded-md border bg-background px-3 text-[15px] text-foreground shadow-sm shadow-foreground/5 transition-all hover:-translate-y-px hover:bg-muted/60 aria-pressed:bg-muted"
-                    aria-pressed={activeFolderId === folder.id}
-                    onFocus={() => prefetchFolderRows(folder)}
-                    onMouseEnter={() => prefetchFolderRows(folder)}
-                    onClick={() => {
-                      setSelectedFolderId(folder.id);
-                      if (folder.unseenCount > 0) {
-                        markFolderSeenMutation.mutate(folder.id);
-                      }
-                    }}
-                    title={
-                      folder.sourceType === "local" || folder.sourceType === "todo"
-                        ? getFolderDisplayName(folder)
-                        : `${getFolderSourceLabel(folder.sourceType)} live folder`
-                    }
-                  >
-                    <span className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground">
-                      <FolderSourceIcon sourceType={folder.sourceType} />
-                    </span>
-                    <span className="truncate">{getFolderDisplayName(folder)}</span>
-                    {folder.isPinned ? (
-                      <PinIcon className="size-3 shrink-0 fill-current text-muted-foreground" />
-                    ) : null}
-                    {folder.syncEnabled ? (
-                      <span className="ml-0.5 size-1.5 shrink-0 rounded-full bg-emerald-500" />
-                    ) : null}
-                    {folder.unseenCount > 0 ? (
-                      <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] text-primary-foreground">
-                        {folder.unseenCount}
-                      </span>
-                    ) : null}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
+                  }}
+                  onPrefetch={() => prefetchFolderRows(folder)}
+                  pinFolderMutation={pinFolderMutation}
+                  syncFolderMutation={syncFolderMutation}
+                  markFolderSeenMutation={markFolderSeenMutation}
+                  deleteFolderMutation={deleteFolderMutation}
+                  onOpenRssSettings={() => openRssSettingsDialog(folder)}
+                  onExportJson={() => exportFolderBookmarks(folder, "json")}
+                  onExportCsv={() => exportFolderBookmarks(folder, "csv")}
+                  onImport={() => promptImportBookmarks(folder.id)}
+                  onDelete={() => deleteFolderMutation.mutate(folder.id)}
+                />
+              ))
+            : null}
 
           <DropdownMenu>
-            <DropdownMenuTrigger className="inline-flex h-8 items-center gap-1.5 rounded-md border border-dashed bg-background px-2.5 text-sm text-muted-foreground shadow-sm shadow-foreground/5 transition-all hover:-translate-y-px hover:bg-muted/60 hover:text-foreground">
+            <DropdownMenuTrigger className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-muted/10 px-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground">
               <PlusIcon className="size-3.5" />
               Live folder
             </DropdownMenuTrigger>
-            <DropdownMenuContent className="w-72 rounded-lg p-1" align="start">
+            <DropdownMenuContent className="w-72" align="start">
               {LIVE_FOLDER_OPTIONS.map((option) => {
                 const alreadyAdded =
                   option.sourceType !== "rss" &&
@@ -2810,7 +2930,7 @@ function AppIndex() {
                     }}
                   >
                     <span className="mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-sm bg-muted text-muted-foreground">
-                      <FolderSourceIcon sourceType={option.sourceType} />
+                      <FolderSourceIcon folder={{ name: "", sourceType: option.sourceType }} />
                     </span>
                     <span className="min-w-0">
                       <span className="block text-sm text-foreground">
@@ -2968,12 +3088,12 @@ function AppIndex() {
             setIsGitHubFolderDialogOpen(open);
             if (!open) {
               setGithubRepoValue("");
-              setSelectedGitHubRepo("");
+              setGithubRepoListSearch("");
               setGithubResourceType("all");
             }
           }}
         >
-          <DialogContent>
+          <DialogContent className="sm:max-w-lg">
             <DialogHeader>
               <DialogTitle>Add GitHub live folder</DialogTitle>
               <DialogDescription>
@@ -2996,57 +3116,101 @@ function AppIndex() {
                   {githubReposQuery.data.error}
                 </p>
               ) : null}
-              {hasGitHubConnection && hasGitHubRepoScope ? (
+              {hasGitHubConnection ? (
                 <div className="grid gap-2">
-                  <label
-                    className="text-sm font-medium text-foreground"
-                    htmlFor="github-repo-picker"
-                  >
-                    Repository from your account
-                  </label>
-                  <select
-                    id="github-repo-picker"
-                    className="h-9 rounded-md border bg-background px-3 text-sm"
-                    value={selectedGitHubRepo}
+                  <div className="flex flex-wrap items-end justify-between gap-2">
+                    <Label htmlFor="github-repo-search" className="text-foreground">
+                      Your repositories
+                    </Label>
+                    {githubReposQuery.isFetching && !githubReposQuery.isLoading ? (
+                      <span className="text-xs text-muted-foreground">Refreshing…</span>
+                    ) : null}
+                  </div>
+                  <Input
+                    id="github-repo-search"
+                    type="search"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="Search owner/repo…"
+                    className="h-9 rounded-md text-sm"
+                    value={githubRepoListSearch}
                     disabled={githubReposQuery.isLoading}
-                    onChange={(event) => {
-                      const nextRepo = event.target.value;
-                      setSelectedGitHubRepo(nextRepo);
-                      if (nextRepo) {
-                        setGithubRepoValue(nextRepo);
+                    onChange={(event) => setGithubRepoListSearch(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
                       }
                     }}
+                  />
+                  <div
+                    role="listbox"
+                    aria-label="Repositories"
+                    className="max-h-56 overflow-y-auto rounded-xl border border-border/70 bg-muted/15 py-1 shadow-inner"
                   >
-                    <option value="">
-                      {githubReposQuery.isLoading ? "Loading repositories..." : "Select repository"}
-                    </option>
-                    {(githubReposQuery.data?.repos ?? []).map((repo) => (
-                      <option key={repo.id} value={repo.fullName}>
-                        {repo.fullName}
-                      </option>
-                    ))}
-                  </select>
-                  {!githubReposQuery.isLoading &&
-                  (githubReposQuery.data?.repos.length ?? 0) === 0 ? (
-                    <p className="text-xs text-muted-foreground">
-                      No repositories found for this account. You can still use manual owner/repo
-                      input.
+                    {githubReposQuery.isLoading ? (
+                      <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-sm text-muted-foreground">
+                        <Loader2Icon className="size-5 animate-spin" />
+                        Loading repositories…
+                      </div>
+                    ) : filteredGithubRepos.length === 0 ? (
+                      <p className="px-3 py-8 text-center text-sm text-muted-foreground">
+                        {githubRepoListSearch.trim()
+                          ? "No repositories match that search."
+                          : "No repositories returned. Try manual entry below or reconnect with repo access."}
+                      </p>
+                    ) : (
+                      filteredGithubRepos.map((repo) => {
+                        const selected = githubRepoValue === repo.fullName;
+                        return (
+                          <button
+                            key={repo.id}
+                            type="button"
+                            role="option"
+                            aria-selected={selected}
+                            className={cn(
+                              "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors",
+                              selected
+                                ? "bg-accent text-accent-foreground"
+                                : "text-foreground hover:bg-muted/70",
+                            )}
+                            onClick={() => {
+                              setGithubRepoValue(repo.fullName);
+                            }}
+                          >
+                            <span className="flex size-4 shrink-0 items-center justify-center">
+                              {selected ? <CheckIcon className="size-3.5 opacity-90" /> : null}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate font-mono text-[13px] leading-snug">
+                              {repo.fullName}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                  {!hasGitHubRepoScope ? (
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      Reconnect with{" "}
+                      <span className="rounded bg-muted px-1 font-mono text-[11px]">repo</span>{" "}
+                      scope to list private repositories and avoid API errors.
                     </p>
                   ) : null}
                 </div>
               ) : null}
               <div className="grid gap-2">
-                <label className="text-sm font-medium text-foreground" htmlFor="github-repo">
-                  Repository (manual)
-                </label>
+                <Label htmlFor="github-repo" className="text-foreground">
+                  Repository <span className="font-normal text-muted-foreground">(manual)</span>
+                </Label>
                 <Input
                   id="github-repo"
                   className="h-9 rounded-md text-sm"
                   placeholder="owner/repo"
                   value={githubRepoValue}
                   onChange={(event) => setGithubRepoValue(event.target.value)}
-                  required
                 />
+                <p className="text-xs text-muted-foreground">
+                  Paste any repo you can access, or pick one from the list above.
+                </p>
               </div>
               <div className="grid gap-2">
                 <p className="text-sm font-medium text-foreground">Stream</p>
@@ -3101,7 +3265,7 @@ function AppIndex() {
                   className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
                   disabled={
                     createLiveFolderMutation.isPending ||
-                    (!githubRepoValue.trim() && !selectedGitHubRepo.trim()) ||
+                    !githubRepoValue.trim() ||
                     githubConnectionQuery.isLoading
                   }
                 >
@@ -3241,7 +3405,6 @@ function AppIndex() {
                   Minimum 20, maximum 5000 items retained in this folder.
                 </p>
               </div>
-              <Separator />
               <DialogFooter>
                 <Button
                   type="button"
@@ -3330,7 +3493,7 @@ function AppIndex() {
           onChange={onImportBookmarksFile}
         />
 
-        {!isXFolderSelected && !isGitHubFolderSelected && isSelectionMode ? (
+        {!isXFolderSelected && isSelectionMode ? (
           <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
             <button
               type="button"
@@ -3374,9 +3537,14 @@ function AppIndex() {
           </div>
         ) : null}
 
-        <div className="grid grid-cols-[minmax(0,1fr)_86px] border-b pb-2 text-sm text-muted-foreground">
+        <div className="grid grid-cols-[minmax(0,1fr)_10rem] border-b border-border/60 pb-2.5 text-sm text-muted-foreground">
           <p>Marks</p>
-          <p className="text-right">Created At</p>
+          <p
+            className="justify-self-end text-right text-sm font-medium text-foreground/80"
+            style={{ width: CREATED_AT_COL_W }}
+          >
+            Created
+          </p>
         </div>
 
         <ul ref={virtualListRef} className="divide-y divide-border/60">
@@ -3384,7 +3552,7 @@ function AppIndex() {
             ? Array.from({ length: 6 }).map((_, index) => (
                 <li
                   key={`skeleton-${index}`}
-                  className="grid grid-cols-[minmax(0,1fr)_86px] items-start gap-3 py-3"
+                  className="grid grid-cols-[minmax(0,1fr)_10rem] items-start gap-3 py-3"
                 >
                   <div className="flex min-w-0 items-start gap-2.5">
                     <div className="frappe-shimmer mt-0.5 size-4 shrink-0 rounded-sm bg-muted/65" />
@@ -3395,7 +3563,9 @@ function AppIndex() {
                       </div>
                     </div>
                   </div>
-                  <div className="frappe-shimmer ml-auto h-3 w-11 rounded-md bg-muted/55" />
+                  <div className="self-center justify-self-end" style={{ width: CREATED_AT_COL_W }}>
+                    <div className="frappe-shimmer h-3.5 w-full rounded-md bg-muted/55" />
+                  </div>
                 </li>
               ))
             : null}
@@ -3422,143 +3592,75 @@ function AppIndex() {
           {!isLoadingRows &&
             isXFolderSelected &&
             !xBookmarksQuery.data?.error &&
-            virtualDisplayedXRows.map((item) => (
-              <li key={item.id} className="py-1">
-                <ContextMenu>
-                  <ContextMenuTrigger className="block w-full rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
-                    <button
-                      type="button"
-                      className="grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_86px] items-start gap-3 rounded-md px-2 py-2 text-left transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 focus-visible:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring/30 data-[state=open]:bg-muted/50"
-                      onClick={() => openExternalUrl(item.url)}
-                      onKeyDown={(event) =>
-                        handleRowKeyDown(event, () => openExternalUrl(item.url))
-                      }
-                    >
-                      <div className="flex min-w-0 items-start gap-2.5">
-                        <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground">
-                          <SiX className="size-3.5" />
-                        </span>
-                        <div className="min-w-0">
-                          <span className="block truncate text-sm text-foreground">
-                            {item.title}
+            virtualDisplayedXRows.map((item) => {
+              const useXAnchorRow = isSafeExternalBookmarkHref(item.url);
+              return (
+                <li key={item.id} className="py-1">
+                  <ContextMenu>
+                    <ContextMenuTrigger className="block w-full rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
+                      <BookmarkRowInteractive
+                        useAnchor={useXAnchorRow}
+                        href={item.url}
+                        className={cn(
+                          "grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_10rem] items-start gap-3 rounded-md px-2 py-2 text-left transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 focus-visible:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring/30 data-[state=open]:bg-muted/50",
+                          useXAnchorRow && "text-foreground visited:text-muted-foreground",
+                        )}
+                        onButtonClick={() => openExternalUrl(item.url)}
+                        onButtonKeyDown={(event) =>
+                          handleRowKeyDown(event, () => openExternalUrl(item.url))
+                        }
+                      >
+                        <div className="flex min-w-0 items-start gap-2.5">
+                          <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground">
+                            <SiX className="size-3.5" />
                           </span>
-                          {search.trim() ? (
-                            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
-                              <span className="truncate text-xs text-muted-foreground">
-                                {item.username ? `@${item.username}` : (item.authorName ?? "X")}
-                              </span>
-                            </div>
-                          ) : null}
+                          <div className="min-w-0">
+                            <span
+                              className={cn(
+                                "block truncate text-sm",
+                                useXAnchorRow ? "text-inherit" : "text-foreground",
+                              )}
+                            >
+                              {item.title}
+                            </span>
+                            {search.trim() ? (
+                              <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
+                                <span
+                                  className={cn(
+                                    "truncate text-xs",
+                                    useXAnchorRow
+                                      ? "text-inherit opacity-90"
+                                      : "text-muted-foreground",
+                                  )}
+                                >
+                                  {item.username ? `@${item.username}` : (item.authorName ?? "X")}
+                                </span>
+                              </div>
+                            ) : null}
+                          </div>
                         </div>
-                      </div>
-                      <p className="pt-0.5 text-right text-xs text-muted-foreground">
-                        {item.createdAt
-                          ? new Date(item.createdAt).toLocaleDateString(undefined, {
-                              month: "short",
-                              day: "numeric",
-                            })
-                          : ""}
-                      </p>
-                    </button>
-                  </ContextMenuTrigger>
-                  <ContextMenuContent className="min-w-44 rounded-lg p-1">
-                    <ContextMenuItem onClick={() => void copyBookmarkUrl(item.url)}>
-                      <ClipboardIcon />
-                      Copy URL
-                    </ContextMenuItem>
-                    <ContextMenuItem
-                      onClick={() => window.open(item.url, "_blank", "noopener,noreferrer")}
-                    >
-                      <ExternalLinkIcon />
-                      Open on X
-                    </ContextMenuItem>
-                  </ContextMenuContent>
-                </ContextMenu>
-              </li>
-            ))}
-
-          {!isLoadingRows && isGitHubFolderSelected && githubItemsQuery.data?.error ? (
-            <li className="px-2 py-10 text-center">
-              <p className="text-sm text-foreground">{githubItemsQuery.data.error}</p>
-              {githubItemsQuery.data.status ? (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  GitHub API status {githubItemsQuery.data.status}
-                </p>
-              ) : null}
-            </li>
-          ) : null}
-
-          {!isLoadingRows &&
-            isGitHubFolderSelected &&
-            !githubItemsQuery.data?.error &&
-            virtualDisplayedGitHubRows.map((item) => (
-              <li key={item.id} className="py-1">
-                <ContextMenu>
-                  <ContextMenuTrigger className="block w-full rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
-                    <button
-                      type="button"
-                      className="grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_86px] items-start gap-3 rounded-md px-2 py-2 text-left transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 focus-visible:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring/30 data-[state=open]:bg-muted/50"
-                      onClick={() => openExternalUrl(item.url)}
-                      onKeyDown={(event) =>
-                        handleRowKeyDown(event, () => openExternalUrl(item.url))
-                      }
-                    >
-                      <div className="flex min-w-0 items-start gap-2.5">
-                        <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground">
-                          {item.type === "pulls" ? (
-                            <GitPullRequestIcon className="size-3.5" />
-                          ) : (
-                            <SiGithub className="size-3.5" />
-                          )}
-                        </span>
-                        <div className="min-w-0">
-                          <span className="block truncate text-sm text-foreground">
-                            {item.title}
-                          </span>
-                          {search.trim() ? (
-                            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
-                              <span className="truncate text-xs text-muted-foreground">
-                                {item.author ? `@${item.author}` : "GitHub"}
-                              </span>
-                              <span className="inline-flex h-5 shrink-0 items-center rounded-full border bg-muted/60 px-2 text-[11px] font-medium text-muted-foreground">
-                                {item.type}
-                              </span>
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                      <p className="pt-0.5 text-right text-xs text-muted-foreground">
-                        {item.updatedAt || item.createdAt
-                          ? new Date(item.updatedAt ?? item.createdAt ?? "").toLocaleDateString(
-                              undefined,
-                              {
-                                month: "short",
-                                day: "numeric",
-                              },
-                            )
-                          : ""}
-                      </p>
-                    </button>
-                  </ContextMenuTrigger>
-                  <ContextMenuContent className="min-w-44 rounded-lg p-1">
-                    <ContextMenuItem onClick={() => void copyBookmarkUrl(item.url)}>
-                      <ClipboardIcon />
-                      Copy URL
-                    </ContextMenuItem>
-                    <ContextMenuItem
-                      onClick={() => window.open(item.url, "_blank", "noopener,noreferrer")}
-                    >
-                      <ExternalLinkIcon />
-                      Open on GitHub
-                    </ContextMenuItem>
-                  </ContextMenuContent>
-                </ContextMenu>
-              </li>
-            ))}
+                        <CreatedAtCell iso={item.createdAt} inheritLinkTint={useXAnchorRow} />
+                      </BookmarkRowInteractive>
+                    </ContextMenuTrigger>
+                    <ContextMenuContent className="min-w-52">
+                      <ContextMenuItem onClick={() => void copyBookmarkUrl(item.url)}>
+                        <ClipboardIcon />
+                        Copy URL
+                      </ContextMenuItem>
+                      <ContextMenuItem
+                        onClick={() => window.open(item.url, "_blank", "noopener,noreferrer")}
+                      >
+                        <ExternalLinkIcon />
+                        Open on X
+                      </ContextMenuItem>
+                    </ContextMenuContent>
+                  </ContextMenu>
+                </li>
+              );
+            })}
 
           {!isLoadingRows &&
             !isXFolderSelected &&
-            !isGitHubFolderSelected &&
             virtualDisplayedVisibleRows.map((item) => {
               const isTodoBookmark = isTodoFolderName(item.folderName);
               const isLink = item.contentType === "link";
@@ -3577,17 +3679,26 @@ function AppIndex() {
               const fallbackFaviconUrl = host
                 ? `https://www.google.com/s2/favicons?sz=64&domain=${encodeURIComponent(host)}`
                 : "";
+              const useAnchorRow =
+                isLink &&
+                isSafeExternalBookmarkHref(item.url) &&
+                !isTodoFolderSelected &&
+                !isSelectionMode;
+              const bookmarkRowInteractiveClass = cn(
+                "grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_10rem] items-start gap-3 rounded-md px-2 py-2 text-left transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 focus-visible:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring/30 data-[state=open]:bg-muted/50",
+                isTodoFolderSelected ? "border border-border/60 bg-muted/20" : "",
+                useAnchorRow && "text-foreground visited:text-muted-foreground",
+              );
 
               return (
                 <li key={item.id} className="py-1">
                   <ContextMenu>
                     <ContextMenuTrigger className="block w-full rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
-                      <button
-                        type="button"
-                        className={`grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_86px] items-start gap-3 rounded-md px-2 py-2 text-left transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 focus-visible:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring/30 data-[state=open]:bg-muted/50 ${
-                          isTodoFolderSelected ? "border border-border/60 bg-muted/20" : ""
-                        }`}
-                        onClick={() => {
+                      <BookmarkRowInteractive
+                        useAnchor={useAnchorRow}
+                        href={item.url}
+                        className={bookmarkRowInteractiveClass}
+                        onButtonClick={() => {
                           if (isTodoFolderSelected) {
                             updateBookmarkFlagsMutation.mutate({
                               id: item.id,
@@ -3597,7 +3708,7 @@ function AppIndex() {
                           }
                           activateBookmarkRow(item);
                         }}
-                        onKeyDown={(event) =>
+                        onButtonKeyDown={(event) =>
                           handleRowKeyDown(event, () => {
                             if (isTodoFolderSelected) {
                               updateBookmarkFlagsMutation.mutate({
@@ -3679,21 +3790,25 @@ function AppIndex() {
                           <div className="min-w-0">
                             {isLink ? (
                               <span
-                                className={`block truncate text-sm text-foreground ${
-                                  isTodoFolderSelected && item.isCompleted
-                                    ? "line-through opacity-70"
-                                    : ""
-                                }`}
+                                className={cn(
+                                  "block truncate text-sm",
+                                  useAnchorRow ? "text-inherit" : "text-foreground",
+                                  isTodoFolderSelected &&
+                                    item.isCompleted &&
+                                    "line-through opacity-70",
+                                )}
                               >
                                 {rowTitle}
                               </span>
                             ) : (
                               <span
-                                className={`block max-w-full truncate text-sm text-foreground ${
-                                  isTodoFolderSelected && item.isCompleted
-                                    ? "line-through opacity-70"
-                                    : ""
-                                }`}
+                                className={cn(
+                                  "block max-w-full truncate text-sm",
+                                  useAnchorRow ? "text-inherit" : "text-foreground",
+                                  isTodoFolderSelected &&
+                                    item.isCompleted &&
+                                    "line-through opacity-70",
+                                )}
                               >
                                 {rowTitle}
                               </span>
@@ -3701,7 +3816,14 @@ function AppIndex() {
                             {secondaryLabel || showMatchScore ? (
                               <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
                                 {secondaryLabel ? (
-                                  <span className="truncate text-xs text-muted-foreground">
+                                  <span
+                                    className={cn(
+                                      "truncate text-xs",
+                                      useAnchorRow
+                                        ? "text-inherit opacity-90"
+                                        : "text-muted-foreground",
+                                    )}
+                                  >
                                     {secondaryLabel}
                                   </span>
                                 ) : null}
@@ -3750,15 +3872,10 @@ function AppIndex() {
                             ) : null}
                           </div>
                         </div>
-                        <p className="pt-0.5 text-right text-xs text-muted-foreground">
-                          {new Date(item.createdAt).toLocaleDateString(undefined, {
-                            month: "short",
-                            day: "numeric",
-                          })}
-                        </p>
-                      </button>
+                        <CreatedAtCell iso={item.createdAt} inheritLinkTint={useAnchorRow} />
+                      </BookmarkRowInteractive>
                     </ContextMenuTrigger>
-                    <ContextMenuContent className="min-w-44 rounded-lg p-1">
+                    <ContextMenuContent className="min-w-52">
                       {!isTodoBookmark ? (
                         <ContextMenuItem onClick={() => void copyBookmarkUrl(item.url)}>
                           <ClipboardIcon />
@@ -3863,9 +3980,7 @@ function AppIndex() {
                         }
                       >
                         {item.visibility === "public" ? <LockIcon /> : <GlobeIcon />}
-                        {item.visibility === "public"
-                          ? "Make private"
-                          : "Make public (show on profile)"}
+                        {item.visibility === "public" ? "Make private" : "Make public "}
                       </ContextMenuItem>
                       <ContextMenuSeparator />
                       <ContextMenuItem
@@ -3882,14 +3997,18 @@ function AppIndex() {
                         <CheckSquareIcon />
                         Select
                       </ContextMenuItem>
-                      <HoldToDelete
-                        mode="menu-item"
+                      <ContextMenuItem
+                        variant="destructive"
                         disabled={deleteBookmarkMutation.isPending}
-                        isPending={deleteBookmarkMutation.isPending}
-                        onDelete={() => deleteBookmarkMutation.mutate(item.id)}
+                        onClick={() => deleteBookmarkMutation.mutate(item.id)}
                       >
+                        {deleteBookmarkMutation.isPending ? (
+                          <Loader2Icon className="size-4 animate-spin" />
+                        ) : (
+                          <Trash2Icon />
+                        )}
                         Delete
-                      </HoldToDelete>
+                      </ContextMenuItem>
                     </ContextMenuContent>
                   </ContextMenu>
                 </li>
@@ -3918,15 +4037,12 @@ function AppIndex() {
             </li>
           ) : null}
 
-          {!isLoadingRows &&
-          !xBookmarksQuery.data?.error &&
-          !githubItemsQuery.data?.error &&
-          totalVisibleRows === 0 ? (
+          {!isLoadingRows && !xBookmarksQuery.data?.error && totalVisibleRows === 0 ? (
             <li className="px-2 py-10 text-center text-sm text-muted-foreground">
               {isXFolderSelected
                 ? "No X bookmarks found."
                 : isGitHubFolderSelected
-                  ? "No GitHub items found."
+                  ? "No GitHub items yet. Sync may still be running, or nothing matched this folder."
                   : "No bookmarks yet."}
             </li>
           ) : null}

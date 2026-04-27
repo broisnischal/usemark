@@ -17,10 +17,10 @@ export const auth = betterAuth({
     schema,
   }),
   account: {
-accountLinking: {
-  enabled: true,
-  trustedProviders: ["github", "google"],
-}
+    accountLinking: {
+      enabled: true,
+      trustedProviders: ["github", "google"],
+    },
   },
 
   // https://www.better-auth.com/docs/integrations/tanstack#usage-tips
@@ -30,7 +30,7 @@ accountLinking: {
   session: {
     cookieCache: {
       enabled: true,
-      maxAge: 5 * 60, // 5 minutes 
+      maxAge: 5 * 60, // 5 minutes
     },
   },
 
@@ -39,7 +39,7 @@ accountLinking: {
     github: {
       clientId: env.GITHUB_CLIENT_ID!,
       clientSecret: env.GITHUB_CLIENT_SECRET!,
-      // scope: ["user:email", "repo", "read:org"],
+      scope: ["user:email", "repo", "read:org"],
     },
     google: {
       clientId: env.GOOGLE_CLIENT_ID!,

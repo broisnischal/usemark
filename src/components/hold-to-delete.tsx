@@ -112,7 +112,7 @@ export function HoldToDelete({
       <button
         {...sharedProps}
         className={cn(
-          "relative flex w-full cursor-default items-center overflow-hidden rounded-md px-2.5 py-2 text-left text-sm font-medium text-destructive outline-hidden select-none focus:bg-destructive/10 focus:text-destructive disabled:pointer-events-none disabled:opacity-50 dark:focus:bg-destructive/20",
+          "relative flex w-full cursor-pointer items-center overflow-hidden rounded-md px-2.5 py-2 text-left text-sm font-medium text-destructive outline-hidden select-none focus:bg-destructive/10 focus:text-destructive disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 dark:focus:bg-destructive/20",
           className,
         )}
       >

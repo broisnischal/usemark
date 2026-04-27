@@ -74,7 +74,7 @@ function RootDocument({ children }: { readonly children: React.ReactNode }) {
           >
             <NuqsAdapter>{children}</NuqsAdapter>
           </HotkeysProvider>
-          <Toaster richColors />
+          <Toaster />
         </ThemeProvider>
 
         <TanStackDevtools

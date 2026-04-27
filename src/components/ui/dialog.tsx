@@ -27,7 +27,7 @@ function DialogClose({ className, ...props }: DialogPrimitive.Close.Props) {
     <DialogPrimitive.Close
       data-slot="dialog-close"
       className={cn(
-        "absolute top-3 right-3 inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4",
+        "absolute top-4 right-4 inline-flex size-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4",
         className,
       )}
       {...props}
@@ -40,7 +40,7 @@ function DialogOverlay({ className, ...props }: DialogPrimitive.Backdrop.Props) 
     <DialogPrimitive.Backdrop
       data-slot="dialog-overlay"
       className={cn(
-        "fixed inset-0 z-50 bg-background/70 backdrop-blur-sm duration-150 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        "fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px] duration-200 dark:bg-black/55 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
         className,
       )}
       {...props}
@@ -52,11 +52,11 @@ function DialogContent({ className, children, ...props }: DialogPrimitive.Popup.
   return (
     <DialogPortal>
       <DialogOverlay />
-      <div className="fixed inset-0 z-50 grid place-items-center p-4 pointer-events-none">
+      <div className="pointer-events-none fixed inset-0 z-50 grid place-items-center p-4">
         <DialogPrimitive.Popup
           data-slot="dialog-content"
           className={cn(
-            "pointer-events-auto relative grid w-full max-w-md gap-4 rounded-lg border bg-popover p-5 text-popover-foreground shadow-2xl shadow-foreground/10 ring-1 ring-foreground/5 duration-150 dark:border-border/80 dark:shadow-black/30 dark:ring-white/5 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+            "pointer-events-auto relative grid w-full max-w-md gap-5 rounded-2xl border border-border/70 bg-popover p-6 text-popover-foreground shadow-[0_8px_40px_-12px_rgba(0,0,0,0.18)] duration-200 dark:border-border/60 dark:bg-popover dark:shadow-[0_12px_48px_-12px_rgba(0,0,0,0.55)] data-open:animate-in data-open:fade-in-0 data-open:zoom-in-[0.98] data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-[0.98]",
             className,
           )}
           {...props}
@@ -73,18 +73,26 @@ function DialogContent({ className, children, ...props }: DialogPrimitive.Popup.
 }
 
 function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
-  return <div className={cn("grid gap-1.5 pr-8", className)} {...props} />;
+  return <div className={cn("grid gap-2 pr-10", className)} {...props} />;
 }
 
 function DialogFooter({ className, ...props }: React.ComponentProps<"div">) {
-  return <div className={cn("flex flex-col-reverse gap-2 sm:flex-row sm:justify-end", className)} {...props} />;
+  return (
+    <div
+      className={cn(
+        "flex flex-col-reverse gap-3 border-t border-border/60 pt-5 sm:flex-row sm:justify-end",
+        className,
+      )}
+      {...props}
+    />
+  );
 }
 
 function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn("text-base font-semibold text-foreground", className)}
+      className={cn("text-lg font-semibold tracking-tight text-foreground", className)}
       {...props}
     />
   );
@@ -94,7 +102,7 @@ function DialogDescription({ className, ...props }: DialogPrimitive.Description.
   return (
     <DialogPrimitive.Description
       data-slot="dialog-description"
-      className={cn("text-sm text-muted-foreground", className)}
+      className={cn("text-sm leading-relaxed text-muted-foreground", className)}
       {...props}
     />
   );

@@ -85,11 +85,13 @@ function hasGitHubRepoScope(scope: string | null | undefined) {
   if (!scope) {
     return false;
   }
-  return scope
+  const tokens = scope
     .split(/[,\s]+/)
     .map((value) => value.trim().toLowerCase())
-    .filter(Boolean)
-    .includes("repo");
+    .filter(Boolean);
+  return tokens.some(
+    (token) => token === "repo" || token === "public_repo" || token.startsWith("repo:"),
+  );
 }
 
 async function fetchGitHub<TResponse>(url: string, accessToken: string) {
@@ -108,6 +110,64 @@ async function fetchGitHub<TResponse>(url: string, accessToken: string) {
   }
 
   return (await response.json()) as TResponse;
+}
+
+type GitHubIssueApiRow = {
+  id: number;
+  html_url: string;
+  title?: string | null;
+  state?: string | null;
+  user?: { login?: string | null } | null;
+  pull_request?: unknown;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+function mapIssueRowsToGitHubItems(rows: GitHubIssueApiRow[]): GitHubItemRecord[] {
+  return rows.map((item) => ({
+    id: String(item.id),
+    url: item.html_url,
+    title: item.title || "GitHub item",
+    type: (item.pull_request ? "pulls" : "issues") as GitHubFolderResourceType,
+    state: item.state ?? null,
+    author: item.user?.login ?? null,
+    createdAt: item.created_at ?? null,
+    updatedAt: item.updated_at ?? null,
+  }));
+}
+
+/**
+ * List repo issues/PRs sorted by recent update. For "issues" or "pulls" only we use the Search API so
+ * we are not limited to "the last 100 timeline entries" from /repos/.../issues (which mixes issues
+ * and PRs — filtering that list often yields zero rows on busy repos even when many issues exist).
+ */
+async function listRepoIssuesOrPullsForResourceType(
+  repo: string,
+  resourceType: "all" | "issues" | "pulls",
+  token: string,
+): Promise<GitHubItemRecord[]> {
+  if (resourceType === "issues" || resourceType === "pulls") {
+    const typeQualifier = resourceType === "issues" ? "type:issue" : "type:pr";
+    const q = `repo:${repo} ${typeQualifier}`;
+    const params = new URLSearchParams({
+      q,
+      sort: "updated",
+      order: "desc",
+      per_page: "100",
+    });
+    const body = await fetchGitHub<{ items: GitHubIssueApiRow[] }>(
+      `https://api.github.com/search/issues?${params.toString()}`,
+      token,
+    );
+    return mapIssueRowsToGitHubItems(body.items ?? []);
+  }
+
+  const issues = await fetchGitHub<GitHubIssueApiRow[]>(
+    `https://api.github.com/repos/${repo}/issues?state=all&sort=updated&direction=desc&per_page=100`,
+    token,
+  );
+
+  return mapIssueRowsToGitHubItems(issues);
 }
 
 export async function listGitHubItemsForUser(userId: string, folderId: string) {
@@ -166,43 +226,7 @@ export async function listGitHubItemsForUser(userId: string, folderId: string) {
     };
   }
 
-  const issues = await fetchGitHub<
-    Array<{
-      id: number;
-      html_url: string;
-      title?: string | null;
-      state?: string | null;
-      user?: { login?: string | null } | null;
-      pull_request?: unknown;
-      created_at?: string | null;
-      updated_at?: string | null;
-    }>
-  >(
-    `https://api.github.com/repos/${parsed.repo}/issues?state=all&sort=updated&direction=desc&per_page=100`,
-    token,
-  );
-
-  const items = issues
-    .filter((item) => {
-      const isPullRequest = Boolean(item.pull_request);
-      if (parsed.resourceType === "issues") {
-        return !isPullRequest;
-      }
-      if (parsed.resourceType === "pulls") {
-        return isPullRequest;
-      }
-      return true;
-    })
-    .map((item) => ({
-      id: String(item.id),
-      url: item.html_url,
-      title: item.title || "GitHub item",
-      type: item.pull_request ? "pulls" : "issues",
-      state: item.state ?? null,
-      author: item.user?.login ?? null,
-      createdAt: item.created_at ?? null,
-      updatedAt: item.updated_at ?? null,
-    })) satisfies GitHubItemRecord[];
+  const items = await listRepoIssuesOrPullsForResourceType(parsed.repo, parsed.resourceType, token);
 
   return { connected: true, items };
 }
@@ -218,27 +242,48 @@ export async function listGitHubReposForUser(userId: string) {
     };
   }
 
-  const repos = await fetchGitHub<
-    Array<{
-      id: number;
-      full_name?: string | null;
-      archived?: boolean;
-      disabled?: boolean;
-      updated_at?: string | null;
-    }>
-  >(
-    "https://api.github.com/user/repos?per_page=100&sort=updated&direction=desc&affiliation=owner,collaborator,organization_member",
-    token,
-  );
+  const aggregated: Array<{
+    id: number;
+    full_name?: string | null;
+    archived?: boolean;
+    disabled?: boolean;
+    updated_at?: string | null;
+  }> = [];
+
+  for (let page = 1; page <= 20; page += 1) {
+    const pageRepos = await fetchGitHub<
+      Array<{
+        id: number;
+        full_name?: string | null;
+        archived?: boolean;
+        disabled?: boolean;
+        updated_at?: string | null;
+      }>
+    >(
+      `https://api.github.com/user/repos?per_page=100&page=${page}&sort=updated&direction=desc&affiliation=owner,collaborator,organization_member`,
+      token,
+    );
+    aggregated.push(...pageRepos);
+    if (pageRepos.length < 100) {
+      break;
+    }
+  }
+
+  const seen = new Set<number>();
+  const repos = aggregated.filter((repo) => {
+    if (!repo.full_name || repo.archived || repo.disabled || seen.has(repo.id)) {
+      return false;
+    }
+    seen.add(repo.id);
+    return true;
+  });
 
   return {
     connected: true,
     hasRepoScope: hasGitHubRepoScope(githubAccount?.scope),
-    repos: repos
-      .filter((repo) => repo.full_name && !repo.archived && !repo.disabled)
-      .map((repo) => ({
-        id: repo.id,
-        fullName: repo.full_name as string,
-      })),
+    repos: repos.map((repo) => ({
+      id: repo.id,
+      fullName: repo.full_name as string,
+    })),
   };
 }

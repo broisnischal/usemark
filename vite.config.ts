@@ -22,6 +22,11 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 3000,
+      // Router plugin rewrites `routeTree.gen.ts`; watching that file can cause reload/HMR churn
+      // and worsen intermittent SSR TDZ errors (see TanStack Router #6775, #5673).
+      watch: {
+        ignored: ["**/routeTree.gen.ts"],
+      },
     },
     plugins: [
       devtools(),
