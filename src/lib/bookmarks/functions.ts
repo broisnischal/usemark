@@ -1,13 +1,13 @@
-import { and, desc, eq, gte, isNotNull, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, or } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { bookmark, bookmarkFolder } from "@/lib/db/schema";
+import { bookmark, bookmarkFolder, user } from "@/lib/db/schema";
 
 import { cosineSimilarity, embedText, getEmbeddingModelName, toEmbeddingText } from "./embeddings";
 import { fetchBookmarkMetadata } from "./metadata";
 
 export type BookmarkContentType = "link" | "text";
-export type BookmarkFolderSourceType = "local" | "rss" | "github" | "x" | "reddit";
+export type BookmarkFolderSourceType = "local" | "todo" | "rss" | "github" | "x" | "reddit";
 
 export interface BookmarkRecord {
   id: string;
@@ -15,6 +15,10 @@ export interface BookmarkRecord {
   url: string;
   title: string | null;
   tag: string;
+  saveForLater: boolean;
+  isImportant: boolean;
+  isCompleted: boolean;
+  visibility: "private" | "public";
   folderId: string;
   folderName: string;
   embeddingStatus: string;
@@ -33,6 +37,9 @@ export interface BookmarkFolderRecord {
   externalResourceId: string | null;
   unseenCount: number;
   lastSyncedAt: string | null;
+  syncIntervalMinutes: number;
+  rssFetchLimit: number;
+  rssKeepRecentCount: number;
 }
 
 interface CreateBookmarkInput {
@@ -42,6 +49,20 @@ interface CreateBookmarkInput {
   category?: string;
 }
 
+interface CreateBookmarksBatchInput {
+  url: string;
+  note?: string;
+  folder?: string;
+  category?: string;
+  folderId?: string;
+  title?: string | null;
+  sourceItemId?: string | null;
+  seenAt?: Date | null;
+  createdAt?: Date | string;
+  tag?: string;
+  contentType?: BookmarkContentType;
+}
+
 interface CreateBookmarkFolderInput {
   name: string;
   sourceType?: BookmarkFolderSourceType;
@@ -49,6 +70,15 @@ interface CreateBookmarkFolderInput {
   externalAccountId?: string | null;
   externalResourceId?: string | null;
   visibility?: "private" | "public";
+  syncIntervalMinutes?: number;
+  rssFetchLimit?: number;
+  rssKeepRecentCount?: number;
+}
+
+interface UpdateRssFolderSettingsInput {
+  syncIntervalMinutes?: number;
+  rssFetchLimit?: number;
+  rssKeepRecentCount?: number;
 }
 
 interface SearchBookmarkInput {
@@ -62,14 +92,23 @@ interface RssItem {
   publishedAt: Date | null;
 }
 
-const RSS_MAX_ACTIVE_ITEMS = 250;
+const RSS_MAX_ACTIVE_ITEMS = 100;
+const RSS_MIN_FETCH_LIMIT = 10;
+const RSS_MAX_FETCH_LIMIT = 500;
+const RSS_MIN_KEEP_RECENT_COUNT = 20;
+const RSS_MAX_KEEP_RECENT_COUNT = 5000;
+const RSS_MIN_SYNC_INTERVAL_MINUTES = 5;
+const RSS_MAX_SYNC_INTERVAL_MINUTES = 1440;
 const REDDIT_RSS_ITEM_LIMIT = 100;
+// Keep this conservative for D1 in local/worker runtimes.
+// New bookmark columns increase bound parameters per row quickly.
 const D1_SQL_VARIABLE_LIMIT = 100;
-const BOOKMARK_INSERT_BOUND_VALUE_COUNT = 12;
+const BOOKMARK_INSERT_BOUND_VALUE_COUNT = 21;
 const RSS_INSERT_CHUNK_SIZE = Math.max(
   1,
   Math.floor(D1_SQL_VARIABLE_LIMIT / BOOKMARK_INSERT_BOUND_VALUE_COUNT),
 );
+const IMPORT_INSERT_CHUNK_SIZE = RSS_INSERT_CHUNK_SIZE;
 
 function inferContentType(value: string): BookmarkContentType {
   const trimmed = value.trim();
@@ -119,11 +158,31 @@ const STOP_WORDS = new Set([
   "with",
 ]);
 
+const SEMANTIC_ALIASES: Record<string, string[]> = {
+  keyboard: ["hotkey", "hotkeys", "shortcut", "shortcuts", "keybinding", "keybindings"],
+  hotkey: ["keyboard", "shortcut", "keybinding"],
+  shortcut: ["keyboard", "hotkey", "keybinding"],
+  keybinding: ["keyboard", "hotkey", "shortcut", "tanstack"],
+  tanstack: ["router", "query", "start", "hotkeys", "keybinding"],
+};
+
 function tokenize(text: string) {
   return text
     .toLowerCase()
     .split(/[^a-z0-9]+/g)
     .filter((token) => token.length > 1 && !STOP_WORDS.has(token));
+}
+
+function expandQueryWithAliases(query: string) {
+  const tokens = tokenize(query);
+  const expandedTokens = new Set(tokens);
+  for (const token of tokens) {
+    const aliases = SEMANTIC_ALIASES[token] ?? [];
+    for (const alias of aliases) {
+      expandedTokens.add(alias);
+    }
+  }
+  return [...expandedTokens].join(" ").trim();
 }
 
 function decodeXmlEntities(value: string) {
@@ -196,7 +255,7 @@ function readXmlLink(source: string) {
   return decodeXmlEntities(atomHref);
 }
 
-function parseRssItems(xml: string) {
+function parseRssItems(xml: string, limit: number = RSS_MAX_ACTIVE_ITEMS) {
   const itemMatches = [...xml.matchAll(/<(item|entry)\b[\s\S]*?<\/\1>/gi)];
   const seenItemIds = new Set<string>();
 
@@ -230,7 +289,7 @@ function parseRssItems(xml: string) {
 
       return items;
     }, [])
-    .slice(0, RSS_MAX_ACTIVE_ITEMS);
+    .slice(0, Math.max(1, limit));
 }
 
 function getUrlHost(urlValue: string) {
@@ -275,7 +334,13 @@ function getLocalFolderId(userId: string, folderName: string) {
 }
 
 function normalizeFolderSourceType(value: string | undefined): BookmarkFolderSourceType {
-  if (value === "rss" || value === "github" || value === "x" || value === "reddit") {
+  if (
+    value === "todo" ||
+    value === "rss" ||
+    value === "github" ||
+    value === "x" ||
+    value === "reddit"
+  ) {
     return value;
   }
 
@@ -284,6 +349,28 @@ function normalizeFolderSourceType(value: string | undefined): BookmarkFolderSou
 
 function normalizeFolderVisibility(value: string | undefined) {
   return value === "public" ? "public" : "private";
+}
+
+function normalizeRssSyncIntervalMinutes(value: number | undefined) {
+  const numericValue = typeof value === "number" && Number.isFinite(value) ? value : 30;
+  return Math.max(
+    RSS_MIN_SYNC_INTERVAL_MINUTES,
+    Math.min(RSS_MAX_SYNC_INTERVAL_MINUTES, Math.floor(numericValue)),
+  );
+}
+
+function normalizeRssFetchLimit(value: number | undefined) {
+  const numericValue =
+    typeof value === "number" && Number.isFinite(value) ? value : RSS_MAX_ACTIVE_ITEMS;
+  return Math.max(RSS_MIN_FETCH_LIMIT, Math.min(RSS_MAX_FETCH_LIMIT, Math.floor(numericValue)));
+}
+
+function normalizeRssKeepRecentCount(value: number | undefined) {
+  const numericValue = typeof value === "number" && Number.isFinite(value) ? value : 500;
+  return Math.max(
+    RSS_MIN_KEEP_RECENT_COUNT,
+    Math.min(RSS_MAX_KEEP_RECENT_COUNT, Math.floor(numericValue)),
+  );
 }
 
 const MONTH_INDEX_BY_NAME = new Map([
@@ -349,7 +436,7 @@ async function ensureFolderForUser(
     .select()
     .from(bookmarkFolder)
     .where(
-      sourceType === "local"
+      sourceType === "local" || sourceType === "todo"
         ? and(eq(bookmarkFolder.userId, userId), eq(bookmarkFolder.name, normalizedName))
         : and(
             eq(bookmarkFolder.userId, userId),
@@ -365,20 +452,26 @@ async function ensureFolderForUser(
   }
 
   const folder = {
-    id: sourceType === "local" ? getLocalFolderId(userId, normalizedName) : crypto.randomUUID(),
+    id:
+      sourceType === "local" || sourceType === "todo"
+        ? getLocalFolderId(userId, normalizedName)
+        : crypto.randomUUID(),
     userId,
     name: normalizedName,
     sourceType,
-    syncEnabled: input?.syncEnabled ?? sourceType !== "local",
+    syncEnabled: input?.syncEnabled ?? (sourceType !== "local" && sourceType !== "todo"),
     isPinned: false,
     visibility: normalizeFolderVisibility(input?.visibility),
     externalAccountId: input?.externalAccountId ?? null,
     externalResourceId: input?.externalResourceId?.trim() || null,
     unseenCount: 0,
     lastSyncedAt: null,
+    syncIntervalMinutes: normalizeRssSyncIntervalMinutes(input?.syncIntervalMinutes),
+    rssFetchLimit: normalizeRssFetchLimit(input?.rssFetchLimit),
+    rssKeepRecentCount: normalizeRssKeepRecentCount(input?.rssKeepRecentCount),
   } satisfies typeof bookmarkFolder.$inferInsert;
 
-  if (sourceType === "local") {
+  if (sourceType === "local" || sourceType === "todo") {
     try {
       await db.insert(bookmarkFolder).values(folder);
     } catch (error) {
@@ -431,6 +524,9 @@ export async function listBookmarkFoldersForUser(userId: string) {
       externalResourceId: bookmarkFolder.externalResourceId,
       unseenCount: bookmarkFolder.unseenCount,
       lastSyncedAt: bookmarkFolder.lastSyncedAt,
+      syncIntervalMinutes: bookmarkFolder.syncIntervalMinutes,
+      rssFetchLimit: bookmarkFolder.rssFetchLimit,
+      rssKeepRecentCount: bookmarkFolder.rssKeepRecentCount,
     })
     .from(bookmarkFolder)
     .where(eq(bookmarkFolder.userId, userId))
@@ -440,6 +536,9 @@ export async function listBookmarkFoldersForUser(userId: string) {
     ...row,
     sourceType: normalizeFolderSourceType(row.sourceType),
     lastSyncedAt: row.lastSyncedAt?.toISOString() ?? null,
+    syncIntervalMinutes: row.syncIntervalMinutes,
+    rssFetchLimit: row.rssFetchLimit,
+    rssKeepRecentCount: row.rssKeepRecentCount,
   })) satisfies BookmarkFolderRecord[];
 }
 
@@ -466,6 +565,73 @@ export async function createBookmarkFolderForUser(
     externalResourceId: folder.externalResourceId,
     unseenCount: folder.unseenCount,
     lastSyncedAt: folder.lastSyncedAt?.toISOString() ?? null,
+    syncIntervalMinutes: folder.syncIntervalMinutes,
+    rssFetchLimit: folder.rssFetchLimit,
+    rssKeepRecentCount: folder.rssKeepRecentCount,
+  } satisfies BookmarkFolderRecord;
+}
+
+export async function updateRssFolderSettingsForUser(
+  userId: string,
+  folderId: string,
+  input: UpdateRssFolderSettingsInput,
+) {
+  const normalizedFolderId = folderId.trim();
+  if (!normalizedFolderId) {
+    throw new Error("Folder id is required.");
+  }
+
+  const existing = await db
+    .select()
+    .from(bookmarkFolder)
+    .where(
+      and(
+        eq(bookmarkFolder.userId, userId),
+        eq(bookmarkFolder.id, normalizedFolderId),
+        eq(bookmarkFolder.sourceType, "rss"),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!existing) {
+    return null;
+  }
+
+  await db
+    .update(bookmarkFolder)
+    .set({
+      syncIntervalMinutes: normalizeRssSyncIntervalMinutes(input.syncIntervalMinutes),
+      rssFetchLimit: normalizeRssFetchLimit(input.rssFetchLimit),
+      rssKeepRecentCount: normalizeRssKeepRecentCount(input.rssKeepRecentCount),
+    })
+    .where(eq(bookmarkFolder.id, normalizedFolderId));
+
+  const updated = await db
+    .select()
+    .from(bookmarkFolder)
+    .where(eq(bookmarkFolder.id, normalizedFolderId))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!updated) {
+    return null;
+  }
+
+  return {
+    id: updated.id,
+    name: updated.name,
+    sourceType: normalizeFolderSourceType(updated.sourceType),
+    syncEnabled: updated.syncEnabled,
+    isPinned: updated.isPinned,
+    visibility: normalizeFolderVisibility(updated.visibility),
+    externalAccountId: updated.externalAccountId,
+    externalResourceId: updated.externalResourceId,
+    unseenCount: updated.unseenCount,
+    lastSyncedAt: updated.lastSyncedAt?.toISOString() ?? null,
+    syncIntervalMinutes: updated.syncIntervalMinutes,
+    rssFetchLimit: updated.rssFetchLimit,
+    rssKeepRecentCount: updated.rssKeepRecentCount,
   } satisfies BookmarkFolderRecord;
 }
 
@@ -528,6 +694,10 @@ function toBookmarkRecord(row: {
   url: string;
   title: string | null;
   tag: string;
+  saveForLater: boolean;
+  isImportant: boolean;
+  isCompleted: boolean;
+  visibility: "private" | "public";
   folderId: string;
   folderName: string;
   embeddingStatus: string;
@@ -540,6 +710,10 @@ function toBookmarkRecord(row: {
     url: row.url,
     title: row.title,
     tag: row.tag,
+    saveForLater: row.saveForLater,
+    isImportant: row.isImportant,
+    isCompleted: row.isCompleted,
+    visibility: row.visibility,
     folderId: row.folderId,
     folderName: row.folderName,
     embeddingStatus: row.embeddingStatus,
@@ -548,11 +722,18 @@ function toBookmarkRecord(row: {
   };
 }
 
-export async function listBookmarksForUser(userId: string, input?: { folderId?: string | null }) {
+export async function listBookmarksForUser(
+  userId: string,
+  input?: { folderId?: string | null; limit?: number | null },
+) {
   await ensureFolderForUser(userId, "default");
   const normalizedFolderId = input?.folderId?.trim() ?? "";
+  const normalizedLimit =
+    typeof input?.limit === "number" && Number.isFinite(input.limit) && input.limit > 0
+      ? Math.max(1, Math.min(500, Math.floor(input.limit)))
+      : null;
 
-  const rows = await db
+  const baseQuery = db
     .select()
     .from(bookmark)
     .innerJoin(bookmarkFolder, eq(bookmark.folderId, bookmarkFolder.id))
@@ -562,6 +743,7 @@ export async function listBookmarksForUser(userId: string, input?: { folderId?: 
         : eq(bookmark.userId, userId),
     )
     .orderBy(desc(bookmark.createdAt));
+  const rows = normalizedLimit ? await baseQuery.limit(normalizedLimit) : await baseQuery;
 
   return rows.map((row) =>
     toBookmarkRecord({
@@ -570,6 +752,10 @@ export async function listBookmarksForUser(userId: string, input?: { folderId?: 
       url: row.bookmark.url,
       title: row.bookmark.title,
       tag: row.bookmark.tag,
+      saveForLater: row.bookmark.saveForLater,
+      isImportant: row.bookmark.isImportant,
+      isCompleted: row.bookmark.isCompleted,
+      visibility: row.bookmark.visibility,
       folderId: row.bookmark.folderId,
       folderName: row.bookmark_folder.name,
       embeddingStatus: row.bookmark.embeddingStatus,
@@ -580,7 +766,7 @@ export async function listBookmarksForUser(userId: string, input?: { folderId?: 
 
 export async function createBookmarkForUser(userId: string, data: CreateBookmarkInput) {
   const normalizedContent = normalizeBookmarkContent(data.url);
-  const url = normalizedContent.content;
+  let url = normalizedContent.content;
   const note = data.note?.trim() || null;
 
   if (!url) {
@@ -588,6 +774,24 @@ export async function createBookmarkForUser(userId: string, data: CreateBookmark
   }
 
   const folder = await ensureFolderForUser(userId, data.folder ?? data.category);
+  const userPreferences = await db
+    .select({ utmEnabled: user.utmEnabled, utmSource: user.utmSource })
+    .from(user)
+    .where(eq(user.id, userId))
+    .limit(1)
+    .then((rows) => rows[0]);
+  if (normalizedContent.contentType === "link" && userPreferences?.utmEnabled) {
+    try {
+      const parsed = new URL(url);
+      const utmSource = userPreferences.utmSource?.trim() || "usemark";
+      parsed.searchParams.set("utm_source", utmSource);
+      parsed.searchParams.set("utm_medium", "bookmark");
+      parsed.searchParams.set("utm_campaign", "saved");
+      url = parsed.toString();
+    } catch {
+      // Keep original URL when parsing fails.
+    }
+  }
   const bookmarkId = crypto.randomUUID();
 
   const record = {
@@ -598,13 +802,223 @@ export async function createBookmarkForUser(userId: string, data: CreateBookmark
     title: normalizedContent.contentType === "text" ? url.slice(0, 80) : null,
     note,
     tag: getTagFromContent(url, normalizedContent.contentType),
+    saveForLater: false,
+    isImportant: false,
+    isCompleted: false,
+    visibility: "private",
     folderId: folder.id,
     embeddingStatus: "pending",
   } satisfies typeof bookmark.$inferInsert;
 
-  await db.insert(bookmark).values(record);
+  try {
+    await db.insert(bookmark).values(record);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!message.includes("UNIQUE constraint failed") && !message.includes("constraint failed")) {
+      throw error;
+    }
+    const existing = await db
+      .select({ id: bookmark.id })
+      .from(bookmark)
+      .where(
+        and(eq(bookmark.userId, userId), eq(bookmark.folderId, folder.id), eq(bookmark.url, url)),
+      )
+      .limit(1)
+      .then((rows) => rows[0]);
+    if (existing?.id) {
+      return { id: existing.id };
+    }
+    throw error;
+  }
 
   return { id: bookmarkId };
+}
+
+function toSafeDate(value: Date | string | undefined) {
+  if (!value) {
+    return new Date();
+  }
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value : new Date();
+  }
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed : new Date();
+}
+
+async function listExistingSourceItemIdsForFolder(
+  userId: string,
+  folderId: string,
+  sourceItemIds: string[],
+) {
+  const existing = new Set<string>();
+  const uniqueIds = [...new Set(sourceItemIds.filter((id) => id.trim().length > 0))];
+  for (let index = 0; index < uniqueIds.length; index += IMPORT_INSERT_CHUNK_SIZE) {
+    const idChunk = uniqueIds.slice(index, index + IMPORT_INSERT_CHUNK_SIZE);
+    if (idChunk.length === 0) {
+      continue;
+    }
+    const rows = await db
+      .select({ sourceItemId: bookmark.sourceItemId })
+      .from(bookmark)
+      .where(
+        and(
+          eq(bookmark.userId, userId),
+          eq(bookmark.folderId, folderId),
+          inArray(bookmark.sourceItemId, idChunk),
+        ),
+      );
+    for (const row of rows) {
+      if (row.sourceItemId) {
+        existing.add(row.sourceItemId);
+      }
+    }
+  }
+  return existing;
+}
+
+export async function createBookmarksBatchForUser(
+  userId: string,
+  items: CreateBookmarksBatchInput[],
+  options: { dedupeByUrlAndFolder?: boolean } = {},
+) {
+  const dedupeByUrlAndFolder = options.dedupeByUrlAndFolder ?? true;
+  const folderCache = new Map<string, string>();
+  const folderExistsCache = new Map<string, boolean>();
+  const batchDeduplicationSet = new Set<string>();
+  const prepared: Array<typeof bookmark.$inferInsert> = [];
+  let skippedCount = 0;
+
+  for (const item of items) {
+    const normalizedContent = normalizeBookmarkContent(item.url ?? "");
+    const url = normalizedContent.content.trim();
+    if (!url) {
+      skippedCount += 1;
+      continue;
+    }
+
+    const folderName = item.folder ?? item.category ?? "default";
+    const folderIdFromInput = item.folderId?.trim();
+    const normalizedFolderName = normalizeFolderName(folderName);
+    const cachedFolderId = folderCache.get(normalizedFolderName);
+    const folderId =
+      folderIdFromInput && folderIdFromInput.length > 0
+        ? folderIdFromInput
+        : (cachedFolderId ??
+          (await ensureFolderForUser(userId, folderName).then((folder) => {
+            folderCache.set(normalizedFolderName, folder.id);
+            return folder.id;
+          })));
+    if (!folderId) {
+      skippedCount += 1;
+      continue;
+    }
+    if (folderIdFromInput && folderIdFromInput.length > 0) {
+      const cachedExists = folderExistsCache.get(folderId);
+      const folderExists =
+        typeof cachedExists === "boolean"
+          ? cachedExists
+          : await db
+              .select({ id: bookmarkFolder.id })
+              .from(bookmarkFolder)
+              .where(and(eq(bookmarkFolder.userId, userId), eq(bookmarkFolder.id, folderId)))
+              .limit(1)
+              .then((rows) => Boolean(rows[0]));
+      folderExistsCache.set(folderId, folderExists);
+      if (!folderExists) {
+        skippedCount += 1;
+        continue;
+      }
+    }
+
+    const dedupeKey = `${folderId}::${url}`;
+    if (batchDeduplicationSet.has(dedupeKey)) {
+      skippedCount += 1;
+      continue;
+    }
+    batchDeduplicationSet.add(dedupeKey);
+
+    const contentType = item.contentType ?? normalizedContent.contentType;
+    prepared.push({
+      id: crypto.randomUUID(),
+      userId,
+      contentType,
+      url,
+      title: item.title?.trim() || (contentType === "text" ? url.slice(0, 80) : null),
+      note: item.note?.trim() || null,
+      tag: item.tag?.trim() || getTagFromContent(url, contentType),
+      saveForLater: false,
+      isImportant: false,
+      isCompleted: false,
+      visibility: "private",
+      sourceItemId: item.sourceItemId ?? null,
+      seenAt: item.seenAt ?? null,
+      folderId,
+      embeddingStatus: "pending",
+      createdAt: toSafeDate(item.createdAt),
+    });
+  }
+
+  if (prepared.length === 0) {
+    return { createdIds: [] as string[], skippedCount, totalProcessed: items.length };
+  }
+
+  let toInsert = prepared;
+  if (dedupeByUrlAndFolder) {
+    const existingKeys = new Set<string>();
+    const urlsByFolderId = new Map<string, string[]>();
+    for (const row of prepared) {
+      const urls = urlsByFolderId.get(row.folderId) ?? [];
+      urls.push(row.url);
+      urlsByFolderId.set(row.folderId, urls);
+    }
+
+    for (const [folderId, folderUrls] of urlsByFolderId) {
+      const uniqueUrls = [...new Set(folderUrls)];
+      for (let index = 0; index < uniqueUrls.length; index += IMPORT_INSERT_CHUNK_SIZE) {
+        const urlChunk = uniqueUrls.slice(index, index + IMPORT_INSERT_CHUNK_SIZE);
+        const existingRows = await db
+          .select({ folderId: bookmark.folderId, url: bookmark.url })
+          .from(bookmark)
+          .where(
+            and(
+              eq(bookmark.userId, userId),
+              eq(bookmark.folderId, folderId),
+              inArray(bookmark.url, urlChunk),
+            ),
+          );
+        for (const existingRow of existingRows) {
+          existingKeys.add(`${existingRow.folderId}::${existingRow.url}`);
+        }
+      }
+    }
+
+    toInsert = prepared.filter((row) => !existingKeys.has(`${row.folderId}::${row.url}`));
+    skippedCount += prepared.length - toInsert.length;
+  }
+
+  for (let index = 0; index < toInsert.length; index += IMPORT_INSERT_CHUNK_SIZE) {
+    await db.insert(bookmark).values(toInsert.slice(index, index + IMPORT_INSERT_CHUNK_SIZE));
+  }
+
+  return {
+    createdIds: toInsert.map((row) => row.id),
+    skippedCount,
+    totalProcessed: items.length,
+  };
+}
+
+export async function bookmarkFolderExistsForUser(userId: string, folderId: string) {
+  const normalizedFolderId = folderId.trim();
+  if (!normalizedFolderId) {
+    return false;
+  }
+  const existing = await db
+    .select({ id: bookmarkFolder.id })
+    .from(bookmarkFolder)
+    .where(and(eq(bookmarkFolder.userId, userId), eq(bookmarkFolder.id, normalizedFolderId)))
+    .limit(1)
+    .then((rows) => rows[0]);
+  return Boolean(existing);
 }
 
 export async function deleteBookmarkForUser(userId: string, bookmarkId: string) {
@@ -629,6 +1043,29 @@ export async function deleteBookmarkForUser(userId: string, bookmarkId: string) 
     .where(and(eq(bookmark.userId, userId), eq(bookmark.id, normalizedBookmarkId)));
 
   return true;
+}
+
+export async function deleteBookmarksForUser(userId: string, bookmarkIds: string[]) {
+  const normalizedIds = [
+    ...new Set(bookmarkIds.map((id) => id.trim()).filter((id) => id.length > 0)),
+  ];
+  if (normalizedIds.length === 0) {
+    return { deletedCount: 0 };
+  }
+
+  const existingRows = await db
+    .select({ id: bookmark.id })
+    .from(bookmark)
+    .where(and(eq(bookmark.userId, userId), inArray(bookmark.id, normalizedIds)));
+  const existingIds = existingRows.map((row) => row.id);
+  if (existingIds.length === 0) {
+    return { deletedCount: 0 };
+  }
+
+  await db
+    .delete(bookmark)
+    .where(and(eq(bookmark.userId, userId), inArray(bookmark.id, existingIds)));
+  return { deletedCount: existingIds.length };
 }
 
 export async function renameBookmarkTitleForUser(
@@ -666,6 +1103,55 @@ export async function renameBookmarkTitleForUser(
   return true;
 }
 
+export async function updateBookmarkFlagsForUser(
+  userId: string,
+  bookmarkId: string,
+  input: {
+    saveForLater?: boolean;
+    isImportant?: boolean;
+    isCompleted?: boolean;
+    visibility?: "private" | "public";
+  },
+) {
+  const normalizedBookmarkId = bookmarkId.trim();
+  if (!normalizedBookmarkId) {
+    throw new Error("Bookmark id is required.");
+  }
+
+  const existing = await db
+    .select({ id: bookmark.id })
+    .from(bookmark)
+    .where(and(eq(bookmark.userId, userId), eq(bookmark.id, normalizedBookmarkId)))
+    .limit(1)
+    .then((rows) => rows[0]);
+  if (!existing) {
+    return false;
+  }
+
+  const changes: Partial<typeof bookmark.$inferInsert> = {};
+  if (typeof input.saveForLater === "boolean") {
+    changes.saveForLater = input.saveForLater;
+  }
+  if (typeof input.isImportant === "boolean") {
+    changes.isImportant = input.isImportant;
+  }
+  if (typeof input.isCompleted === "boolean") {
+    changes.isCompleted = input.isCompleted;
+  }
+  if (input.visibility === "private" || input.visibility === "public") {
+    changes.visibility = input.visibility;
+  }
+  if (Object.keys(changes).length === 0) {
+    return true;
+  }
+
+  await db
+    .update(bookmark)
+    .set(changes)
+    .where(and(eq(bookmark.userId, userId), eq(bookmark.id, normalizedBookmarkId)));
+  return true;
+}
+
 export async function refetchBookmarkMetadataForUser(userId: string, bookmarkId: string) {
   const normalizedBookmarkId = bookmarkId.trim();
   if (!normalizedBookmarkId) {
@@ -685,6 +1171,41 @@ export async function refetchBookmarkMetadataForUser(userId: string, bookmarkId:
 
   await processBookmarkEmbedding(normalizedBookmarkId, { force: true, refreshTitle: true });
   return true;
+}
+
+export async function requestBookmarkEmbeddingForUser(
+  userId: string,
+  bookmarkId: string,
+  options: { force?: boolean } = {},
+) {
+  const row = await db
+    .select({
+      id: bookmark.id,
+      embeddingStatus: bookmark.embeddingStatus,
+    })
+    .from(bookmark)
+    .where(and(eq(bookmark.id, bookmarkId), eq(bookmark.userId, userId)))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!row) {
+    return null;
+  }
+
+  if (options.force || row.embeddingStatus !== "processing") {
+    await db
+      .update(bookmark)
+      .set({
+        embeddingStatus: "pending",
+        embeddingError: null,
+      })
+      .where(eq(bookmark.id, bookmarkId));
+  }
+
+  return {
+    id: bookmarkId,
+    embeddingStatus: "pending" as const,
+  };
 }
 
 export async function deleteBookmarkFolderForUser(userId: string, folderId: string) {
@@ -769,7 +1290,10 @@ export async function markBookmarkFolderSeenForUser(userId: string, folderId: st
     .where(and(eq(bookmarkFolder.userId, userId), eq(bookmarkFolder.id, normalizedFolderId)));
 }
 
-export async function syncRssBookmarkFolder(folderId: string) {
+export async function syncRssBookmarkFolder(
+  folderId: string,
+  options: { immediateInsertLimit?: number } = {},
+) {
   const folder = await db
     .select()
     .from(bookmarkFolder)
@@ -778,7 +1302,12 @@ export async function syncRssBookmarkFolder(folderId: string) {
     .then((rows) => rows[0]);
 
   if (!folder?.externalResourceId || !folder.syncEnabled) {
-    return { added: 0, bookmarkIds: [] };
+    return {
+      userId: folder?.userId ?? null,
+      added: 0,
+      bookmarkIds: [] as string[],
+      deferredItems: [],
+    };
   }
 
   const response = await fetch(getRssFetchUrl(folder.externalResourceId), {
@@ -793,25 +1322,13 @@ export async function syncRssBookmarkFolder(folderId: string) {
   }
 
   const xml = await response.text();
-  const items = parseRssItems(xml);
-  const existingSourceItemIds = new Set(
-    await db
-      .select({ sourceItemId: bookmark.sourceItemId })
-      .from(bookmark)
-      .where(
-        and(
-          eq(bookmark.userId, folder.userId),
-          eq(bookmark.folderId, folder.id),
-          isNotNull(bookmark.sourceItemId),
-        ),
-      )
-      .then((rows) =>
-        rows
-          .map((row) => row.sourceItemId)
-          .filter((sourceItemId): sourceItemId is string => Boolean(sourceItemId)),
-      ),
+  const items = parseRssItems(xml, normalizeRssFetchLimit(folder.rssFetchLimit));
+  const existingSourceItemIds = await listExistingSourceItemIdsForFolder(
+    folder.userId,
+    folder.id,
+    items.map((item) => item.id),
   );
-  const newBookmarks: Array<typeof bookmark.$inferInsert> = [];
+  const importCandidates: CreateBookmarksBatchInput[] = [];
 
   for (const item of items) {
     if (existingSourceItemIds.has(item.id)) {
@@ -823,47 +1340,92 @@ export async function syncRssBookmarkFolder(folderId: string) {
       continue;
     }
 
-    const bookmarkId = crypto.randomUUID();
-
-    newBookmarks.push({
-      id: bookmarkId,
-      userId: folder.userId,
-      contentType: "link",
+    importCandidates.push({
       url: normalized.content,
       title: item.title,
       note: item.title,
+      folderId: folder.id,
+      folder: folder.name,
+      contentType: "link",
       tag: getTagFromUrl(normalized.content),
       sourceItemId: item.id,
       seenAt: null,
-      folderId: folder.id,
-      embeddingStatus: "pending",
       createdAt: item.publishedAt ?? new Date(),
     });
     existingSourceItemIds.add(item.id);
   }
 
-  for (let index = 0; index < newBookmarks.length; index += RSS_INSERT_CHUNK_SIZE) {
-    await db.insert(bookmark).values(newBookmarks.slice(index, index + RSS_INSERT_CHUNK_SIZE));
-  }
+  const immediateInsertLimit = Math.max(0, options.immediateInsertLimit ?? importCandidates.length);
+  const immediateCandidates = importCandidates.slice(0, immediateInsertLimit);
+  const deferredCandidates = importCandidates.slice(immediateInsertLimit);
+  const immediateResult = await createBookmarksBatchForUser(folder.userId, immediateCandidates, {
+    dedupeByUrlAndFolder: true,
+  });
 
+  const addedCount = immediateResult.createdIds.length;
   await db
     .update(bookmarkFolder)
     .set({
       lastSyncedAt: new Date(),
-      unseenCount: folder.unseenCount + newBookmarks.length,
+      unseenCount: folder.unseenCount + addedCount,
     })
     .where(eq(bookmarkFolder.id, folder.id));
 
-  return { added: newBookmarks.length, bookmarkIds: newBookmarks.map((item) => item.id) };
+  const keepRecentCount = normalizeRssKeepRecentCount(folder.rssKeepRecentCount);
+  const orderedRssIds = await db
+    .select({ id: bookmark.id })
+    .from(bookmark)
+    .where(
+      and(
+        eq(bookmark.userId, folder.userId),
+        eq(bookmark.folderId, folder.id),
+        isNotNull(bookmark.sourceItemId),
+      ),
+    )
+    .orderBy(desc(bookmark.createdAt))
+    .limit(keepRecentCount + RSS_INSERT_CHUNK_SIZE);
+  const idsToDelete = orderedRssIds.slice(keepRecentCount).map((row) => row.id);
+  if (idsToDelete.length > 0) {
+    for (let index = 0; index < idsToDelete.length; index += RSS_INSERT_CHUNK_SIZE) {
+      const deleteChunk = idsToDelete.slice(index, index + RSS_INSERT_CHUNK_SIZE);
+      await db.delete(bookmark).where(inArray(bookmark.id, deleteChunk));
+    }
+  }
+
+  return {
+    userId: folder.userId,
+    added: addedCount,
+    bookmarkIds: immediateResult.createdIds,
+    deferredItems: deferredCandidates,
+  };
 }
 
 export async function listDueRssBookmarkFolderIds() {
+  const now = Date.now();
   const rows = await db
-    .select({ id: bookmarkFolder.id })
+    .select({
+      id: bookmarkFolder.id,
+      lastSyncedAt: bookmarkFolder.lastSyncedAt,
+      syncIntervalMinutes: bookmarkFolder.syncIntervalMinutes,
+    })
     .from(bookmarkFolder)
-    .where(and(eq(bookmarkFolder.sourceType, "rss"), eq(bookmarkFolder.syncEnabled, true)));
+    .where(
+      and(
+        eq(bookmarkFolder.sourceType, "rss"),
+        eq(bookmarkFolder.syncEnabled, true),
+        or(isNull(bookmarkFolder.lastSyncedAt), lte(bookmarkFolder.lastSyncedAt, new Date(now))),
+      ),
+    );
 
-  return rows.map((row) => row.id);
+  return rows
+    .filter((row) => {
+      if (!row.lastSyncedAt) {
+        return true;
+      }
+      const intervalMs = normalizeRssSyncIntervalMinutes(row.syncIntervalMinutes) * 60_000;
+      return row.lastSyncedAt.getTime() + intervalMs <= now;
+    })
+    .map((row) => row.id);
 }
 
 export async function processBookmarkEmbedding(
@@ -942,6 +1504,8 @@ export async function searchBookmarksForUser(userId: string, data: SearchBookmar
   if (!query) {
     return [] satisfies BookmarkRecord[];
   }
+  const expandedQuery = expandQueryWithAliases(query);
+  const effectiveQuery = expandedQuery.length > 0 ? expandedQuery : query;
 
   const dateFilter = parseRelativeDateRange(query);
   const whereClause = dateFilter
@@ -963,9 +1527,9 @@ export async function searchBookmarksForUser(userId: string, data: SearchBookmar
     return [] satisfies BookmarkRecord[];
   }
 
-  const queryEmbedding = await embedText(query);
-  const loweredQuery = query.toLowerCase();
-  const queryTokens = tokenize(query);
+  const queryEmbedding = await embedText(effectiveQuery);
+  const loweredQuery = effectiveQuery.toLowerCase();
+  const queryTokens = tokenize(effectiveQuery);
   const queryTokenSet = new Set(queryTokens);
 
   const ranked = rows
@@ -1055,6 +1619,10 @@ export async function searchBookmarksForUser(userId: string, data: SearchBookmar
         url: item.row.bookmark.url,
         title: item.row.bookmark.title,
         tag: item.row.bookmark.tag,
+        saveForLater: item.row.bookmark.saveForLater,
+        isImportant: item.row.bookmark.isImportant,
+        isCompleted: item.row.bookmark.isCompleted,
+        visibility: item.row.bookmark.visibility,
         folderId: item.row.bookmark.folderId,
         folderName: item.row.bookmark_folder.name,
         embeddingStatus: item.row.bookmark.embeddingStatus,

@@ -1,9 +1,11 @@
 import { a11yDevtoolsPlugin } from "@tanstack/devtools-a11y/react";
 import { TanStackDevtools } from "@tanstack/react-devtools";
+import { HotkeysProvider } from "@tanstack/react-hotkeys";
 import type { QueryClient } from "@tanstack/react-query";
 import { ReactQueryDevtoolsPanel } from "@tanstack/react-query-devtools";
 import { createRootRouteWithContext, HeadContent, Scripts } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
+import { NuqsAdapter } from "nuqs/adapters/tanstack-router";
 
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
@@ -62,7 +64,16 @@ function RootDocument({ children }: { readonly children: React.ReactNode }) {
       </head>
       <body>
         <ThemeProvider>
-          {children}
+          <HotkeysProvider
+            defaultOptions={{
+              hotkey: {
+                preventDefault: true,
+                stopPropagation: true,
+              },
+            }}
+          >
+            <NuqsAdapter>{children}</NuqsAdapter>
+          </HotkeysProvider>
           <Toaster richColors />
         </ThemeProvider>
 

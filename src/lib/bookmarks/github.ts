@@ -38,7 +38,10 @@ export function normalizeGitHubResourceType(value: string | undefined): GitHubFo
 }
 
 export function normalizeGitHubRepo(value: string) {
-  const trimmed = value.trim().replace(/^https:\/\/github\.com\//i, "").replace(/\.git$/i, "");
+  const trimmed = value
+    .trim()
+    .replace(/^https:\/\/github\.com\//i, "")
+    .replace(/\.git$/i, "");
   const [owner, repo] = trimmed.split("/").filter(Boolean);
 
   if (!owner || !repo) {
@@ -68,14 +71,25 @@ function parseGitHubExternalResourceId(value: string | null) {
 
 async function getGitHubAccessTokenForUser(userId: string) {
   const row = await db
-    .select({ accessToken: account.accessToken })
+    .select({ accessToken: account.accessToken, scope: account.scope })
     .from(account)
     .where(and(eq(account.userId, userId), eq(account.providerId, "github")))
     .orderBy(desc(account.updatedAt))
     .limit(1)
     .then((rows) => rows[0]);
 
-  return row?.accessToken ?? null;
+  return row ?? null;
+}
+
+function hasGitHubRepoScope(scope: string | null | undefined) {
+  if (!scope) {
+    return false;
+  }
+  return scope
+    .split(/[,\s]+/)
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+    .includes("repo");
 }
 
 async function fetchGitHub<TResponse>(url: string, accessToken: string) {
@@ -97,7 +111,8 @@ async function fetchGitHub<TResponse>(url: string, accessToken: string) {
 }
 
 export async function listGitHubItemsForUser(userId: string, folderId: string) {
-  const token = await getGitHubAccessTokenForUser(userId);
+  const githubAccount = await getGitHubAccessTokenForUser(userId);
+  const token = githubAccount?.accessToken ?? null;
   if (!token) {
     return { connected: false, items: [] as GitHubItemRecord[] };
   }
@@ -108,7 +123,13 @@ export async function listGitHubItemsForUser(userId: string, folderId: string) {
       externalResourceId: bookmarkFolder.externalResourceId,
     })
     .from(bookmarkFolder)
-    .where(and(eq(bookmarkFolder.userId, userId), eq(bookmarkFolder.id, folderId), eq(bookmarkFolder.sourceType, "github")))
+    .where(
+      and(
+        eq(bookmarkFolder.userId, userId),
+        eq(bookmarkFolder.id, folderId),
+        eq(bookmarkFolder.sourceType, "github"),
+      ),
+    )
     .limit(1)
     .then((rows) => rows[0]);
 
@@ -156,7 +177,10 @@ export async function listGitHubItemsForUser(userId: string, folderId: string) {
       created_at?: string | null;
       updated_at?: string | null;
     }>
-  >(`https://api.github.com/repos/${parsed.repo}/issues?state=open&sort=updated&direction=desc&per_page=100`, token);
+  >(
+    `https://api.github.com/repos/${parsed.repo}/issues?state=all&sort=updated&direction=desc&per_page=100`,
+    token,
+  );
 
   const items = issues
     .filter((item) => {
@@ -181,4 +205,40 @@ export async function listGitHubItemsForUser(userId: string, folderId: string) {
     })) satisfies GitHubItemRecord[];
 
   return { connected: true, items };
+}
+
+export async function listGitHubReposForUser(userId: string) {
+  const githubAccount = await getGitHubAccessTokenForUser(userId);
+  const token = githubAccount?.accessToken ?? null;
+  if (!token) {
+    return {
+      connected: false,
+      hasRepoScope: false,
+      repos: [] as Array<{ id: number; fullName: string }>,
+    };
+  }
+
+  const repos = await fetchGitHub<
+    Array<{
+      id: number;
+      full_name?: string | null;
+      archived?: boolean;
+      disabled?: boolean;
+      updated_at?: string | null;
+    }>
+  >(
+    "https://api.github.com/user/repos?per_page=100&sort=updated&direction=desc&affiliation=owner,collaborator,organization_member",
+    token,
+  );
+
+  return {
+    connected: true,
+    hasRepoScope: hasGitHubRepoScope(githubAccount?.scope),
+    repos: repos
+      .filter((repo) => repo.full_name && !repo.archived && !repo.disabled)
+      .map((repo) => ({
+        id: repo.id,
+        fullName: repo.full_name as string,
+      })),
+  };
 }

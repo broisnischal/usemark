@@ -45,8 +45,14 @@
 - add the feature of the fuzzy searching, use the fuse libvary to do that
 - fix the layout, width, navbar, and the profile all should be symmetric, and better
 
+- when importing the bookmarks, or rss, rss slhould import fast, like the first, 10 or 15 or 25, then other should be in chunk, or in the bacground for the inngest,
+
+- save later, flags, bookmark bookmark, hehe
+- fix the add of rss, it is lagging, not showing data for first 5 minutes, and then shows, fix that,
+
 add the page where user can learn this, like the setting page, add another learn,
 
+advanced search examples/docs:
 host:reddit.com
 site:github.com
 domain:example.com
@@ -55,6 +61,31 @@ folder:default
 tag:reddit
 type:link
 type:text
-subreddit:reactjs or sub:reactjs
+subreddit:reactjs or sub:reactjs or r:reactjs
 
 and there should be this as well
+
+dont save for folders, like gmail, x bookmark, reddit, rss and so on in the database only save if user want to do like save explictly,
+
+gmail inbox integration
+
+maybe spotify playlist integration or music playlist kind of integration
+
+alt 1, 2, 3, 4 with switch the folder from the created at sorting
+
+feature to remove the previous rss, like prevent unwanted database bloating , and prevent the worker cpu and memory less
+
+folder to configure the sync interval , limit recent count, limit to fetch the rss, and so on, and much more optimization in right context it should be there as the feature
+
+keybinding for the tanstack for using this application made easy
+better design for the rename and so on
+
+folder mark as the public
+
+create the bookmark folder with the kind of todo, where i will be adding the task, and that will have the checkbox, and the ui like what i will do today, like a daily update kind of thing
+
+i can delete the rss one indivual and in next sync it should not come that again so that should be fixed
+
+able to show the user's repostiory when connecting to the github, then user selects that, and select type , or users add the repo url and use the other, github
+
+medium feed connect, daily.dev if possible and the dev.to

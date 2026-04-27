@@ -6,22 +6,35 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact, { reactCompilerPreset } from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-export default defineConfig({
-  resolve: {
-    tsconfigPaths: true,
-  },
-  server: {
-    port: 3000,
-  },
-  plugins: [
-    devtools(),
-    cloudflare({ viteEnvironment: { name: "ssr" } }),
-    tanstackStart(),
-    viteReact(),
-    // https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md#react-compiler
-    babel({
-      presets: [reactCompilerPreset()],
-    }),
-    tailwindcss(),
-  ],
+export default defineConfig(({ mode }) => {
+  const isDev = mode === "development";
+
+  return {
+    resolve: {
+      tsconfigPaths: true,
+    },
+    optimizeDeps: {
+      include: [
+        "use-sync-external-store/shim/with-selector",
+        "use-sync-external-store/with-selector",
+      ],
+      exclude: ["@tanstack/react-hotkeys"],
+    },
+    server: {
+      port: 3000,
+    },
+    plugins: [
+      devtools(),
+      cloudflare({ viteEnvironment: { name: "ssr" } }),
+      tanstackStart(),
+      viteReact(),
+      // Keep dev HMR responsive; run React Compiler only for non-dev builds.
+      !isDev
+        ? babel({
+            presets: [reactCompilerPreset()],
+          })
+        : null,
+      tailwindcss(),
+    ],
+  };
 });

@@ -24,11 +24,15 @@ import { Route as AuthAppIndexRouteImport } from './routes/_auth/app/index'
 import { Route as ApiXConnectRouteImport } from './routes/api/x/connect'
 import { Route as ApiXCallbackRouteImport } from './routes/api/x/callback'
 import { Route as ApiXBookmarksRouteImport } from './routes/api/x/bookmarks'
+import { Route as ApiGithubReposRouteImport } from './routes/api/github/repos'
 import { Route as ApiGithubItemsRouteImport } from './routes/api/github/items'
 import { Route as ApiBookmarksSearchRouteImport } from './routes/api/bookmarks.search'
 import { Route as ApiBookmarksAskRouteImport } from './routes/api/bookmarks.ask'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as AuthAppTermsRouteImport } from './routes/_auth/app/terms'
 import { Route as AuthAppProfileRouteImport } from './routes/_auth/app/profile'
+import { Route as AuthAppLearnRouteImport } from './routes/_auth/app/learn'
+import { Route as AuthAppHelpRouteImport } from './routes/_auth/app/help'
 
 const GuestRouteRoute = GuestRouteRouteImport.update({
   id: '/_guest',
@@ -103,6 +107,11 @@ const ApiXBookmarksRoute = ApiXBookmarksRouteImport.update({
   path: '/api/x/bookmarks',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiGithubReposRoute = ApiGithubReposRouteImport.update({
+  id: '/api/github/repos',
+  path: '/api/github/repos',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiGithubItemsRoute = ApiGithubItemsRouteImport.update({
   id: '/api/github/items',
   path: '/api/github/items',
@@ -123,9 +132,24 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthAppTermsRoute = AuthAppTermsRouteImport.update({
+  id: '/terms',
+  path: '/terms',
+  getParentRoute: () => AuthAppRouteRoute,
+} as any)
 const AuthAppProfileRoute = AuthAppProfileRouteImport.update({
   id: '/profile',
   path: '/profile',
+  getParentRoute: () => AuthAppRouteRoute,
+} as any)
+const AuthAppLearnRoute = AuthAppLearnRouteImport.update({
+  id: '/learn',
+  path: '/learn',
+  getParentRoute: () => AuthAppRouteRoute,
+} as any)
+const AuthAppHelpRoute = AuthAppHelpRouteImport.update({
+  id: '/help',
+  path: '/help',
   getParentRoute: () => AuthAppRouteRoute,
 } as any)
 
@@ -139,11 +163,15 @@ export interface FileRoutesByFullPath {
   '/api/inngest': typeof ApiInngestRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/uploadthing': typeof ApiUploadthingRoute
+  '/app/help': typeof AuthAppHelpRoute
+  '/app/learn': typeof AuthAppLearnRoute
   '/app/profile': typeof AuthAppProfileRoute
+  '/app/terms': typeof AuthAppTermsRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/bookmarks/ask': typeof ApiBookmarksAskRoute
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
   '/api/github/items': typeof ApiGithubItemsRoute
+  '/api/github/repos': typeof ApiGithubReposRoute
   '/api/x/bookmarks': typeof ApiXBookmarksRoute
   '/api/x/callback': typeof ApiXCallbackRoute
   '/api/x/connect': typeof ApiXConnectRoute
@@ -158,11 +186,15 @@ export interface FileRoutesByTo {
   '/api/inngest': typeof ApiInngestRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/uploadthing': typeof ApiUploadthingRoute
+  '/app/help': typeof AuthAppHelpRoute
+  '/app/learn': typeof AuthAppLearnRoute
   '/app/profile': typeof AuthAppProfileRoute
+  '/app/terms': typeof AuthAppTermsRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/bookmarks/ask': typeof ApiBookmarksAskRoute
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
   '/api/github/items': typeof ApiGithubItemsRoute
+  '/api/github/repos': typeof ApiGithubReposRoute
   '/api/x/bookmarks': typeof ApiXBookmarksRoute
   '/api/x/callback': typeof ApiXCallbackRoute
   '/api/x/connect': typeof ApiXConnectRoute
@@ -181,11 +213,15 @@ export interface FileRoutesById {
   '/api/inngest': typeof ApiInngestRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/uploadthing': typeof ApiUploadthingRoute
+  '/_auth/app/help': typeof AuthAppHelpRoute
+  '/_auth/app/learn': typeof AuthAppLearnRoute
   '/_auth/app/profile': typeof AuthAppProfileRoute
+  '/_auth/app/terms': typeof AuthAppTermsRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/bookmarks/ask': typeof ApiBookmarksAskRoute
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
   '/api/github/items': typeof ApiGithubItemsRoute
+  '/api/github/repos': typeof ApiGithubReposRoute
   '/api/x/bookmarks': typeof ApiXBookmarksRoute
   '/api/x/callback': typeof ApiXCallbackRoute
   '/api/x/connect': typeof ApiXConnectRoute
@@ -203,11 +239,15 @@ export interface FileRouteTypes {
     | '/api/inngest'
     | '/api/profile'
     | '/api/uploadthing'
+    | '/app/help'
+    | '/app/learn'
     | '/app/profile'
+    | '/app/terms'
     | '/api/auth/$'
     | '/api/bookmarks/ask'
     | '/api/bookmarks/search'
     | '/api/github/items'
+    | '/api/github/repos'
     | '/api/x/bookmarks'
     | '/api/x/callback'
     | '/api/x/connect'
@@ -222,11 +262,15 @@ export interface FileRouteTypes {
     | '/api/inngest'
     | '/api/profile'
     | '/api/uploadthing'
+    | '/app/help'
+    | '/app/learn'
     | '/app/profile'
+    | '/app/terms'
     | '/api/auth/$'
     | '/api/bookmarks/ask'
     | '/api/bookmarks/search'
     | '/api/github/items'
+    | '/api/github/repos'
     | '/api/x/bookmarks'
     | '/api/x/callback'
     | '/api/x/connect'
@@ -244,11 +288,15 @@ export interface FileRouteTypes {
     | '/api/inngest'
     | '/api/profile'
     | '/api/uploadthing'
+    | '/_auth/app/help'
+    | '/_auth/app/learn'
     | '/_auth/app/profile'
+    | '/_auth/app/terms'
     | '/api/auth/$'
     | '/api/bookmarks/ask'
     | '/api/bookmarks/search'
     | '/api/github/items'
+    | '/api/github/repos'
     | '/api/x/bookmarks'
     | '/api/x/callback'
     | '/api/x/connect'
@@ -266,6 +314,7 @@ export interface RootRouteChildren {
   ApiUploadthingRoute: typeof ApiUploadthingRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiGithubItemsRoute: typeof ApiGithubItemsRoute
+  ApiGithubReposRoute: typeof ApiGithubReposRoute
   ApiXBookmarksRoute: typeof ApiXBookmarksRoute
   ApiXCallbackRoute: typeof ApiXCallbackRoute
   ApiXConnectRoute: typeof ApiXConnectRoute
@@ -378,6 +427,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiXBookmarksRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/github/repos': {
+      id: '/api/github/repos'
+      path: '/api/github/repos'
+      fullPath: '/api/github/repos'
+      preLoaderRoute: typeof ApiGithubReposRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/github/items': {
       id: '/api/github/items'
       path: '/api/github/items'
@@ -406,6 +462,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_auth/app/terms': {
+      id: '/_auth/app/terms'
+      path: '/terms'
+      fullPath: '/app/terms'
+      preLoaderRoute: typeof AuthAppTermsRouteImport
+      parentRoute: typeof AuthAppRouteRoute
+    }
     '/_auth/app/profile': {
       id: '/_auth/app/profile'
       path: '/profile'
@@ -413,16 +476,36 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthAppProfileRouteImport
       parentRoute: typeof AuthAppRouteRoute
     }
+    '/_auth/app/learn': {
+      id: '/_auth/app/learn'
+      path: '/learn'
+      fullPath: '/app/learn'
+      preLoaderRoute: typeof AuthAppLearnRouteImport
+      parentRoute: typeof AuthAppRouteRoute
+    }
+    '/_auth/app/help': {
+      id: '/_auth/app/help'
+      path: '/help'
+      fullPath: '/app/help'
+      preLoaderRoute: typeof AuthAppHelpRouteImport
+      parentRoute: typeof AuthAppRouteRoute
+    }
   }
 }
 
 interface AuthAppRouteRouteChildren {
+  AuthAppHelpRoute: typeof AuthAppHelpRoute
+  AuthAppLearnRoute: typeof AuthAppLearnRoute
   AuthAppProfileRoute: typeof AuthAppProfileRoute
+  AuthAppTermsRoute: typeof AuthAppTermsRoute
   AuthAppIndexRoute: typeof AuthAppIndexRoute
 }
 
 const AuthAppRouteRouteChildren: AuthAppRouteRouteChildren = {
+  AuthAppHelpRoute: AuthAppHelpRoute,
+  AuthAppLearnRoute: AuthAppLearnRoute,
   AuthAppProfileRoute: AuthAppProfileRoute,
+  AuthAppTermsRoute: AuthAppTermsRoute,
   AuthAppIndexRoute: AuthAppIndexRoute,
 }
 
@@ -481,6 +564,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiUploadthingRoute: ApiUploadthingRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiGithubItemsRoute: ApiGithubItemsRoute,
+  ApiGithubReposRoute: ApiGithubReposRoute,
   ApiXBookmarksRoute: ApiXBookmarksRoute,
   ApiXCallbackRoute: ApiXCallbackRoute,
   ApiXConnectRoute: ApiXConnectRoute,

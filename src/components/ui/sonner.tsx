@@ -18,39 +18,42 @@ const Toaster = ({ ...props }: ToasterProps) => {
     <Sonner
       theme={theme as ToasterProps["theme"]}
       position="bottom-center"
-      offset={18}
+      offset={16}
       visibleToasts={3}
-      gap={5}
+      gap={8}
       expand={false}
-      richColors={false}
+      richColors
+      closeButton
       className="toaster group"
       icons={{
-        success: <CircleCheckIcon className="size-3" />,
-        info: <InfoIcon className="size-3" />,
-        warning: <TriangleAlertIcon className="size-3" />,
-        error: <OctagonXIcon className="size-3" />,
-        loading: <Loader2Icon className="size-3 animate-spin" />,
+        success: <CircleCheckIcon className="size-4 text-emerald-600 dark:text-emerald-400" />,
+        info: <InfoIcon className="size-4 text-sky-600 dark:text-sky-400" />,
+        warning: <TriangleAlertIcon className="size-4 text-amber-600 dark:text-amber-400" />,
+        error: <OctagonXIcon className="size-4 text-rose-600 dark:text-rose-400" />,
+        loading: <Loader2Icon className="size-4 animate-spin text-muted-foreground" />,
       }}
       style={
         {
           "--normal-bg": "var(--popover)",
           "--normal-text": "var(--popover-foreground)",
           "--normal-border": "var(--border)",
-          "--border-radius": "999px",
+          "--border-radius": "12px",
         } as React.CSSProperties
       }
       toastOptions={{
-        duration: 2200,
+        duration: 2600,
         classNames: {
           toast:
-            "cn-toast min-h-0 w-fit max-w-[min(88vw,320px)] rounded-full border bg-popover/95 px-3 py-1.5 text-popover-foreground shadow-lg shadow-foreground/8 ring-1 ring-foreground/5 backdrop-blur-xl transition-all duration-150 ease-out dark:border-border/80 dark:bg-popover/90 dark:shadow-black/25 dark:ring-white/5",
-          title: "text-xs font-medium leading-4 tracking-normal",
-          description: "text-[11px] leading-4 text-muted-foreground",
-          icon: "mr-1 text-muted-foreground",
+            "cn-toast min-h-[44px] w-full max-w-[min(92vw,360px)] rounded-xl border border-border/80 bg-popover/95 px-3 py-2 text-popover-foreground shadow-xl shadow-black/10 ring-1 ring-black/5 backdrop-blur-xl transition-all duration-150 ease-out dark:border-border/70 dark:bg-popover/92 dark:shadow-black/40 dark:ring-white/10",
+          title: "text-sm font-medium leading-5 tracking-tight",
+          description: "mt-0.5 text-xs leading-4 text-muted-foreground",
+          icon: "mr-2 shrink-0 rounded-md bg-muted/70 p-1",
           actionButton:
-            "h-6 rounded-full bg-primary px-2.5 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/85",
+            "h-7 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/85",
           cancelButton:
-            "h-6 rounded-full bg-muted px-2.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted/80 hover:text-foreground",
+            "h-7 rounded-md bg-muted px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/80 hover:text-foreground",
+          closeButton:
+            "h-5 w-5 rounded-md border border-border/60 bg-background/80 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
         },
       }}
       {...props}

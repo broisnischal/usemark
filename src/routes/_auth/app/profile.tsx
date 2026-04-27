@@ -4,6 +4,7 @@ import { createFileRoute, useRouter } from "@tanstack/react-router";
 import {
   AlertTriangleIcon,
   CheckCircle2Icon,
+  ExternalLinkIcon,
   Loader2Icon,
   MailIcon,
   RssIcon,
@@ -53,11 +54,23 @@ interface ProfileResponse {
     visibility: "private" | "public";
     syncEnabled: boolean;
   }>;
+  publicBookmarks: Array<{
+    id: string;
+    title: string | null;
+    url: string;
+    tag: string;
+    folderName: string;
+    createdAt: string;
+  }>;
   folderCount: number;
   availableProviders: {
     github: boolean;
     google: boolean;
     x: boolean;
+  };
+  preferences: {
+    utmEnabled: boolean;
+    utmSource: string;
   };
 }
 
@@ -99,6 +112,7 @@ function ProfilePage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [deleteConfirmation, setDeleteConfirmation] = React.useState("");
+  const [utmDraft, setUtmDraft] = React.useState<{ enabled: boolean; source: string } | null>(null);
   const profileQuery = useQuery({
     queryKey: profileQueryKey,
     queryFn: readProfile,
@@ -160,6 +174,48 @@ function ProfilePage() {
     },
   });
 
+  const saveUtmSettingsMutation = useMutation({
+    mutationFn: async (payload: { utmEnabled: boolean; utmSource: string }) => {
+      const response = await fetch("/api/profile", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "update-utm-settings",
+          utmEnabled: payload.utmEnabled,
+          utmSource: payload.utmSource.trim() || "usemark",
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(
+          response.status === 401 ? "Please sign in." : "Could not save UTM settings.",
+        );
+      }
+      return (await response.json()) as {
+        success: true;
+        preferences: { utmEnabled: boolean; utmSource: string };
+      };
+    },
+    onSuccess: async (result) => {
+      queryClient.setQueryData(profileQueryKey, (current: ProfileResponse | undefined) =>
+        current
+          ? {
+              ...current,
+              preferences: result.preferences,
+            }
+          : current,
+      );
+      setUtmDraft(null);
+      toast.success("UTM settings updated.");
+      await queryClient.invalidateQueries({ queryKey: profileQueryKey });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Could not save UTM settings.";
+      toast.error(message);
+    },
+  });
+
   if (profileQuery.isLoading) {
     return (
       <main className="mx-auto w-full max-w-6xl px-4 py-6">
@@ -182,6 +238,8 @@ function ProfilePage() {
   }
 
   const canDelete = deleteConfirmation.trim().toLowerCase() === profile.user.email.toLowerCase();
+  const effectiveUtmEnabled = utmDraft?.enabled ?? profile.preferences.utmEnabled;
+  const effectiveUtmSource = utmDraft?.source ?? (profile.preferences.utmSource || "usemark");
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 pt-6 pb-12">
@@ -347,6 +405,96 @@ function ProfilePage() {
             <RssIcon className="size-4" />
             RSS folders connect per feed from the main app.
           </div>
+        </div>
+      </section>
+
+      <section className="mt-4 rounded-md border bg-card p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <UsersIcon className="size-4 text-muted-foreground" />
+          <h3 className="text-sm font-semibold">Public profile bookmarks</h3>
+        </div>
+        {profile.publicBookmarks.length > 0 ? (
+          <div className="grid gap-2">
+            {profile.publicBookmarks.map((item) => (
+              <a
+                key={item.id}
+                href={item.url}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2 transition-colors hover:bg-muted/60"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{item.title?.trim() || item.url}</p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {item.folderName} - {item.tag}
+                  </p>
+                </div>
+                <ExternalLinkIcon className="size-3.5 shrink-0 text-muted-foreground" />
+              </a>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No public bookmarks yet. Mark a bookmark as public from the marks list to show it here.
+          </p>
+        )}
+      </section>
+
+      <section className="mt-4 rounded-md border bg-card p-4">
+        <div className="mb-4 flex items-center gap-2">
+          <RssIcon className="size-4 text-muted-foreground" />
+          <h3 className="text-sm font-semibold">Bookmark UTM tracking</h3>
+        </div>
+        <p className="mb-3 text-sm text-muted-foreground">
+          Add UTM parameters automatically when saving new link bookmarks.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-end">
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="size-4 rounded border"
+              checked={effectiveUtmEnabled}
+              onChange={(event) =>
+                setUtmDraft((current) => ({
+                  enabled: event.target.checked,
+                  source: current?.source ?? effectiveUtmSource,
+                }))
+              }
+            />
+            Enable UTM source
+          </label>
+          <div className="grid gap-1">
+            <label className="text-xs text-muted-foreground" htmlFor="utm-source">
+              UTM source value
+            </label>
+            <Input
+              id="utm-source"
+              value={effectiveUtmSource}
+              onChange={(event) =>
+                setUtmDraft((current) => ({
+                  enabled: current?.enabled ?? effectiveUtmEnabled,
+                  source: event.target.value,
+                }))
+              }
+              placeholder="usemark"
+              className="h-9"
+            />
+          </div>
+          <Button
+            className="h-9"
+            disabled={saveUtmSettingsMutation.isPending}
+            onClick={() =>
+              saveUtmSettingsMutation.mutate({
+                utmEnabled: effectiveUtmEnabled,
+                utmSource: effectiveUtmSource.trim() || "usemark",
+              })
+            }
+          >
+            {saveUtmSettingsMutation.isPending ? (
+              <Loader2Icon className="size-4 animate-spin" />
+            ) : null}
+            Save
+          </Button>
         </div>
       </section>
 

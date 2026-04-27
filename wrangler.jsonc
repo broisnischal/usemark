@@ -22,9 +22,7 @@
     },
   ],
   "preview_urls": true,
-  "compatibility_flags": [
-    "nodejs_compat"
-  ],
+  "compatibility_flags": ["nodejs_compat"],
   "main": "@tanstack/react-start/server-entry",
   "vars": {
     "VITE_BASE_URL": "https://shop.lexicon.website/",
@@ -49,7 +47,7 @@
       "binding": "bmark",
       "database_name": "bmark",
       "database_id": "18a49258-5fe4-41db-8a05-d82794641dd9",
-      "remote": true,
+      "remote": false,
     },
   ],
   "ai": {

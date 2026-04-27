@@ -12,6 +12,8 @@ export const user = sqliteTable("user", {
     .default(sql`0`)
     .notNull(),
   image: text("image"),
+  utmEnabled: integer("utm_enabled", { mode: "boolean" }).notNull().default(false),
+  utmSource: text("utm_source").notNull().default("usemark"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).default(defaultTimestampMs).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" })
     .default(defaultTimestampMs)

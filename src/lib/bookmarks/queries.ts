@@ -6,6 +6,7 @@ export const bookmarksQueryKey = ["bookmarks"] as const;
 export const bookmarkFoldersQueryKey = ["bookmark-folders"] as const;
 export const xBookmarksQueryKey = ["x-bookmarks"] as const;
 export const githubItemsQueryKey = ["github-items"] as const;
+export const githubReposQueryKey = ["github-repos"] as const;
 
 const FOLDER_DATA_STALE_TIME = 60_000;
 const FOLDER_DATA_GC_TIME = 15 * 60_000;
@@ -46,6 +47,15 @@ export interface GitHubItemsResponse {
   detail?: string;
 }
 
+export interface GitHubReposResponse {
+  connected: boolean;
+  hasRepoScope: boolean;
+  repos: Array<{ id: number; fullName: string }>;
+  error?: string;
+  status?: number;
+  detail?: string;
+}
+
 async function readJson<T>(response: Response) {
   if (!response.ok) {
     const message = response.status === 401 ? "Please sign in." : "Request failed.";
@@ -54,9 +64,13 @@ async function readJson<T>(response: Response) {
   return (await response.json()) as T;
 }
 
-export const bookmarksQueryOptions = (folderId: string | null | undefined, enabled = true) =>
+export const bookmarksQueryOptions = (
+  folderId: string | null | undefined,
+  enabled = true,
+  limit?: number,
+) =>
   queryOptions({
-    queryKey: [...bookmarksQueryKey, "list", folderId ?? "all"] as const,
+    queryKey: [...bookmarksQueryKey, "list", folderId ?? "all", limit ?? "all"] as const,
     enabled,
     staleTime: FOLDER_DATA_STALE_TIME,
     gcTime: FOLDER_DATA_GC_TIME,
@@ -64,6 +78,9 @@ export const bookmarksQueryOptions = (folderId: string | null | undefined, enabl
       const params = new URLSearchParams();
       if (folderId) {
         params.set("folderId", folderId);
+      }
+      if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) {
+        params.set("limit", String(Math.max(1, Math.floor(limit))));
       }
       const queryString = params.toString();
       const response = await fetch(`/api/bookmarks${queryString ? `?${queryString}` : ""}`, {
@@ -143,6 +160,26 @@ export const githubItemsQueryOptions = (folderId: string | null | undefined) =>
         },
       );
       const data = (await response.json()) as GitHubItemsResponse;
+      if (!response.ok && data.error) {
+        return data;
+      }
+      return data;
+    },
+  });
+
+export const githubReposQueryOptions = (enabled: boolean) =>
+  queryOptions({
+    queryKey: githubReposQueryKey,
+    enabled,
+    retry: false,
+    staleTime: FOLDER_DATA_STALE_TIME,
+    gcTime: FOLDER_DATA_GC_TIME,
+    queryFn: async ({ signal }) => {
+      const response = await fetch("/api/github/repos", {
+        method: "GET",
+        signal,
+      });
+      const data = (await response.json()) as GitHubReposResponse;
       if (!response.ok && data.error) {
         return data;
       }

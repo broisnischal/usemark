@@ -1,10 +1,15 @@
 import "@tanstack/react-start/server-only";
+import { load as loadHtml } from "cheerio";
 
 export interface BookmarkMetadata {
   title: string | null;
   description: string | null;
   semanticText: string | null;
 }
+
+const FETCH_TIMEOUT_MS = 8_000;
+const MAX_HTML_CONTENT_LENGTH_BYTES = 1_500_000;
+const MAX_HTML_READ_BYTES = 1_500_000;
 
 function decodeHtmlEntities(value: string) {
   return value
@@ -16,35 +21,6 @@ function decodeHtmlEntities(value: string) {
     .replaceAll("&#39;", "'");
 }
 
-function cleanTextFromHtml(html: string) {
-  return decodeHtmlEntities(
-    html
-      .replaceAll(/<script[\s\S]*?<\/script>/gi, " ")
-      .replaceAll(/<style[\s\S]*?<\/style>/gi, " ")
-      .replaceAll(/<noscript[\s\S]*?<\/noscript>/gi, " ")
-      .replaceAll(/<\/(p|div|article|section|h1|h2|h3|li|br)>/gi, "\n")
-      .replaceAll(/<[^>]+>/g, " ")
-      .replaceAll(/\s+/g, " ")
-      .trim(),
-  );
-}
-
-function matchGroup(source: string, expression: RegExp) {
-  const result = source.match(expression);
-  return result?.[1]?.trim() ?? "";
-}
-
-function readMetaContent(html: string, attributeName: "name" | "property", attributeValue: string) {
-  const escapedValue = attributeValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const tagMatch = html.match(
-    new RegExp(
-      `<meta\\b(?=[^>]*\\b${attributeName}=["']${escapedValue}["'])(?=[^>]*\\bcontent=["']([^"']*)["'])[^>]*>`,
-      "i",
-    ),
-  );
-  return tagMatch?.[1]?.trim() ?? "";
-}
-
 function truncate(text: string, limit: number) {
   if (text.length <= limit) {
     return text;
@@ -52,12 +28,78 @@ function truncate(text: string, limit: number) {
   return `${text.slice(0, limit)}...`;
 }
 
+function collapseWhitespace(value: string) {
+  return decodeHtmlEntities(value).replaceAll(/\s+/g, " ").trim();
+}
+
+function readMeta($: ReturnType<typeof loadHtml>, keys: string[]) {
+  for (const key of keys) {
+    const byName = collapseWhitespace($(`meta[name="${key}"]`).attr("content") ?? "");
+    if (byName) {
+      return byName;
+    }
+    const byProperty = collapseWhitespace($(`meta[property="${key}"]`).attr("content") ?? "");
+    if (byProperty) {
+      return byProperty;
+    }
+  }
+  return "";
+}
+
+function readTextCandidates($: ReturnType<typeof loadHtml>, selectors: string[], limit: number) {
+  const chunks: string[] = [];
+  for (const selector of selectors) {
+    $(selector).each((_, element) => {
+      const value = collapseWhitespace($(element).text());
+      if (!value) {
+        return;
+      }
+      chunks.push(value);
+    });
+    if (chunks.length > 0) {
+      break;
+    }
+  }
+  return truncate(chunks.join("\n"), limit);
+}
+
+async function readTextWithByteLimit(response: Response, byteLimit: number) {
+  if (!response.body) {
+    return await response.text();
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalLength = 0;
+
+  while (true) {
+    const result = await reader.read();
+    if (result.done) {
+      break;
+    }
+    const chunk = result.value;
+    totalLength += chunk.length;
+    if (totalLength > byteLimit) {
+      await reader.cancel("Response exceeded safe size limit.");
+      return null;
+    }
+    chunks.push(chunk);
+  }
+
+  const buffer = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return new TextDecoder().decode(buffer);
+}
+
 function createMetadata(title: string | null, description: string | null, content?: string | null) {
   const normalizedTitle = title?.trim() || null;
   const normalizedDescription = description?.trim() || null;
-  const semanticText = [normalizedTitle, normalizedDescription, content]
-    .filter(Boolean)
-    .join("\n");
+  const semanticText = [normalizedTitle, normalizedDescription, content].filter(Boolean).join("\n");
 
   return {
     title: normalizedTitle,
@@ -111,7 +153,7 @@ async function fetchYoutubeMetadata(url: string) {
 
 async function fetchHtmlMetadata(url: string) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8_000);
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   const response = await fetch(url, {
     method: "GET",
     redirect: "follow",
@@ -131,25 +173,64 @@ async function fetchHtmlMetadata(url: string) {
     return null;
   }
 
-  const html = await response.text();
-  const htmlTitle = matchGroup(html, /<title[^>]*>([\s\S]*?)<\/title>/i);
-  const ogTitle = readMetaContent(html, "property", "og:title");
-  const twitterTitle = readMetaContent(html, "name", "twitter:title");
-  const metaDescription = readMetaContent(html, "name", "description");
-  const ogDescription = readMetaContent(html, "property", "og:description");
-  const twitterDescription = readMetaContent(html, "name", "twitter:description");
-  const articleBody = cleanTextFromHtml(
-    matchGroup(html, /<main[^>]*>([\s\S]*?)<\/main>/i) ||
-      matchGroup(html, /<article[^>]*>([\s\S]*?)<\/article>/i) ||
-      matchGroup(html, /<body[^>]*>([\s\S]*?)<\/body>/i) ||
-      html,
-  );
+  const contentLengthHeader = response.headers.get("content-length");
+  const contentLength = contentLengthHeader ? Number(contentLengthHeader) : Number.NaN;
+  if (Number.isFinite(contentLength) && contentLength > MAX_HTML_CONTENT_LENGTH_BYTES) {
+    return null;
+  }
 
-  return createMetadata(
-    decodeHtmlEntities(ogTitle || twitterTitle || htmlTitle),
-    decodeHtmlEntities(ogDescription || twitterDescription || metaDescription),
-    truncate(articleBody, 3500),
+  const html = await readTextWithByteLimit(response, MAX_HTML_READ_BYTES);
+  if (!html) {
+    return null;
+  }
+  const $ = loadHtml(html);
+
+  // Remove noisy nodes before extracting document text.
+  $("script,style,noscript,svg,canvas,iframe,template").remove();
+
+  const title =
+    readMeta($, ["og:title", "twitter:title"]) ||
+    collapseWhitespace($("head > title").first().text());
+  const description = readMeta($, ["description", "og:description", "twitter:description"]);
+  const siteName = readMeta($, ["og:site_name"]);
+  const publishedAt =
+    readMeta($, [
+      "article:published_time",
+      "article:modified_time",
+      "og:updated_time",
+      "pubdate",
+      "date",
+    ]) || collapseWhitespace($("time[datetime]").first().attr("datetime") ?? "");
+  const urlFromMeta = readMeta($, ["og:url", "twitter:url", "canonical"]);
+  const canonical = collapseWhitespace($('link[rel="canonical"]').attr("href") ?? "");
+  const headings = readTextCandidates(
+    $,
+    ["main h1, main h2, article h1, article h2", "h1, h2"],
+    600,
   );
+  const bodyText = readTextCandidates($, ["main", "article", "[role='main']", "body"], 8_000);
+  const extractedHost = (() => {
+    try {
+      return new URL(url).hostname.replace(/^www\./, "");
+    } catch {
+      return "";
+    }
+  })();
+
+  const semanticText = [
+    title ? `title: ${title}` : "",
+    description ? `description: ${description}` : "",
+    siteName ? `site_name: ${siteName}` : "",
+    publishedAt ? `published_at: ${publishedAt}` : "",
+    extractedHost ? `host: ${extractedHost}` : "",
+    canonical || urlFromMeta ? `canonical_url: ${canonical || urlFromMeta}` : "",
+    headings ? `headings:\n${headings}` : "",
+    bodyText ? `content:\n${bodyText}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return createMetadata(title, description || null, semanticText || null);
 }
 
 export async function fetchBookmarkMetadata(url: string) {

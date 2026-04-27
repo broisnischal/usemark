@@ -8,8 +8,8 @@ import {
   listBookmarkFoldersForUser,
   markBookmarkFolderSeenForUser,
   pinBookmarkFolderForUser,
-  processBookmarkEmbedding,
   syncRssBookmarkFolder,
+  updateRssFolderSettingsForUser,
   type BookmarkFolderSourceType,
 } from "@/lib/bookmarks/functions";
 import {
@@ -19,12 +19,101 @@ import {
 } from "@/lib/bookmarks/github";
 import { inngest } from "@/lib/inngest/client";
 
+const RSS_IMMEDIATE_INSERT_LIMIT = 15;
+
+async function queueBookmarkIndexEvents(bookmarkIds: string[]) {
+  if (bookmarkIds.length === 0) {
+    return;
+  }
+  await inngest.send(
+    bookmarkIds.map((bookmarkId) => ({
+      id: `bookmark-index-${bookmarkId}`,
+      name: "bookmark/index.requested",
+      data: { bookmarkId },
+    })),
+  );
+}
+
+async function queueDeferredImportEvent(
+  userId: string | null,
+  folderId: string,
+  deferredItems: Array<{
+    url: string;
+    note?: string;
+    folder?: string;
+    category?: string;
+    folderId?: string;
+    title?: string | null;
+    sourceItemId?: string | null;
+    createdAt?: Date | string;
+    tag?: string;
+    contentType?: "link" | "text";
+  }>,
+) {
+  if (!userId || deferredItems.length === 0) {
+    return;
+  }
+  await inngest.send({
+    id: `bookmark-import-rss-${folderId}-${Date.now()}`,
+    name: "bookmark/import.requested",
+    data: {
+      userId,
+      sourceFolderId: folderId,
+      items: deferredItems.map((item) => ({
+        ...item,
+        createdAt:
+          typeof item.createdAt === "string"
+            ? item.createdAt
+            : item.createdAt instanceof Date
+              ? item.createdAt.toISOString()
+              : undefined,
+      })),
+    },
+  });
+}
+
+async function runImmediateRssSync(folderId: string) {
+  return syncRssBookmarkFolder(folderId, {
+    immediateInsertLimit: RSS_IMMEDIATE_INSERT_LIMIT,
+  });
+}
+
+async function runRssSyncFastAndQueue(folderId: string) {
+  const result = await runImmediateRssSync(folderId);
+  try {
+    await queueBookmarkIndexEvents(result.bookmarkIds);
+    await queueDeferredImportEvent(result.userId, folderId, result.deferredItems);
+  } catch {
+    // Avoid request-time heavy fallbacks in Worker runtime.
+  }
+  return result;
+}
+
 function normalizeSourceType(value: string | undefined): BookmarkFolderSourceType {
-  if (value === "rss" || value === "github" || value === "x" || value === "reddit") {
+  if (
+    value === "todo" ||
+    value === "rss" ||
+    value === "github" ||
+    value === "x" ||
+    value === "reddit"
+  ) {
     return value;
   }
 
   return "local";
+}
+
+function isTodoFolderName(name: string | undefined) {
+  const normalized = name?.trim().toLowerCase() ?? "";
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized === "todo" ||
+    normalized.startsWith("todo:") ||
+    normalized.startsWith("todo-") ||
+    normalized.includes(" todo")
+  );
 }
 
 export const Route = createFileRoute("/api/bookmark-folders")({
@@ -60,7 +149,7 @@ export const Route = createFileRoute("/api/bookmark-folders")({
           externalAccountId?: string | null;
           externalResourceId?: string | null;
         };
-        const sourceType = normalizeSourceType(payload.sourceType);
+        let sourceType = normalizeSourceType(payload.sourceType);
         const feedUrl = payload.externalResourceId?.trim() ?? "";
         let feedHost = "";
         if (sourceType === "rss" && feedUrl) {
@@ -75,6 +164,10 @@ export const Route = createFileRoute("/api/bookmark-folders")({
           return Response.json({ error: "Folder name is required." }, { status: 400 });
         }
 
+        if (sourceType === "local" && isTodoFolderName(name)) {
+          sourceType = "todo";
+        }
+
         if (sourceType === "rss" && !feedUrl) {
           return Response.json({ error: "RSS feed URL is required." }, { status: 400 });
         }
@@ -87,7 +180,10 @@ export const Route = createFileRoute("/api/bookmark-folders")({
         if (sourceType === "github") {
           const repo = normalizeGitHubRepo(payload.externalResourceId ?? "");
           if (!repo) {
-            return Response.json({ error: "Enter a GitHub repository as owner/repo." }, { status: 400 });
+            return Response.json(
+              { error: "Enter a GitHub repository as owner/repo." },
+              { status: 400 },
+            );
           }
 
           const resourceType = normalizeGitHubResourceType(payload.name);
@@ -98,28 +194,13 @@ export const Route = createFileRoute("/api/bookmark-folders")({
         const folder = await createBookmarkFolderForUser(userId, {
           name,
           sourceType,
-          syncEnabled: payload.syncEnabled ?? sourceType !== "local",
+          syncEnabled: payload.syncEnabled ?? (sourceType !== "local" && sourceType !== "todo"),
           externalAccountId: payload.externalAccountId ?? null,
           externalResourceId,
         });
 
         if (folder.sourceType === "rss") {
-          try {
-            await inngest.send({
-              id: `rss-folder-sync-${folder.id}-${Date.now()}`,
-              name: "bookmark-folder/rss.sync.requested",
-              data: {
-                folderId: folder.id,
-                userId,
-              },
-            });
-          } catch {
-            void syncRssBookmarkFolder(folder.id)
-              .then(async (result) => {
-                await Promise.all(result.bookmarkIds.map((bookmarkId) => processBookmarkEmbedding(bookmarkId)));
-              })
-              .catch(() => {});
-          }
+          await runRssSyncFastAndQueue(folder.id);
         }
 
         return Response.json(folder, { status: 201 });
@@ -134,7 +215,13 @@ export const Route = createFileRoute("/api/bookmark-folders")({
           return Response.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        const payload = (await request.json()) as { id?: string; action?: string };
+        const payload = (await request.json()) as {
+          id?: string;
+          action?: string;
+          syncIntervalMinutes?: number;
+          rssFetchLimit?: number;
+          rssKeepRecentCount?: number;
+        };
         const folderId = payload.id?.trim() ?? "";
         if (!folderId) {
           return Response.json({ error: "Folder id is required." }, { status: 400 });
@@ -162,28 +249,21 @@ export const Route = createFileRoute("/api/bookmark-folders")({
           }
 
           if (folder.sourceType === "local") {
-            return Response.json({ error: "Manual folders do not have an external source to sync." }, { status: 400 });
+            return Response.json(
+              { error: "Manual folders do not have an external source to sync." },
+              { status: 400 },
+            );
           }
 
           if (folder.sourceType === "rss") {
-            try {
-              await inngest.send({
-                id: `rss-folder-sync-${folder.id}-${Date.now()}`,
-                name: "bookmark-folder/rss.sync.requested",
-                data: {
-                  folderId: folder.id,
-                  userId,
-                },
-              });
-            } catch {
-              void syncRssBookmarkFolder(folder.id)
-                .then(async (result) => {
-                  await Promise.all(result.bookmarkIds.map((bookmarkId) => processBookmarkEmbedding(bookmarkId)));
-                })
-                .catch(() => {});
-            }
-
-            return Response.json({ success: true, id: folderId, sourceType: folder.sourceType });
+            const result = await runRssSyncFastAndQueue(folder.id);
+            return Response.json({
+              success: true,
+              id: folderId,
+              sourceType: folder.sourceType,
+              importedNow: result.added,
+              queued: result.deferredItems.length,
+            });
           }
 
           if (folder.sourceType === "x") {
@@ -198,6 +278,18 @@ export const Route = createFileRoute("/api/bookmark-folders")({
             { error: `${folder.sourceType} folder sync is not available yet.` },
             { status: 400 },
           );
+        }
+
+        if (payload.action === "configure-sync") {
+          const updated = await updateRssFolderSettingsForUser(userId, folderId, {
+            syncIntervalMinutes: payload.syncIntervalMinutes,
+            rssFetchLimit: payload.rssFetchLimit,
+            rssKeepRecentCount: payload.rssKeepRecentCount,
+          });
+          if (!updated) {
+            return Response.json({ error: "RSS folder not found." }, { status: 404 });
+          }
+          return Response.json({ success: true, folder: updated });
         }
 
         return Response.json({ error: "Unsupported action." }, { status: 400 });
