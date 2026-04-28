@@ -84,7 +84,10 @@ function HomePage() {
           >
             UseMark
           </Link>
-          <nav className="flex items-center gap-2 sm:gap-3">
+          <nav className="flex items-center gap-1 sm:gap-2">
+            <Link to="/terms" className={buttonVariants({ variant: "ghost", size: "sm" })}>
+              Terms
+            </Link>
             <Link to="/login" className={buttonVariants({ variant: "ghost", size: "sm" })}>
               Sign in
             </Link>
@@ -177,7 +180,7 @@ function HomePage() {
         </section>
 
         <section className="border-t border-border/60 bg-muted/15 px-4 py-12 sm:px-6">
-          <div className="mx-auto flex w-full max-w-5xl flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+          <div className="mx-auto flex w-full max-w-5xl flex-col items-start justify-between gap-4 rounded-2xl border border-border/60 bg-card/50 p-6 sm:flex-row sm:items-center">
             <div>
               <h2 className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">
                 Start with your first folder today
@@ -197,8 +200,31 @@ function HomePage() {
         </section>
       </main>
 
-      <footer className="border-t border-border/60 py-8 text-center">
-        <p className="text-xs text-muted-foreground">© {new Date().getFullYear()} UseMark</p>
+      <footer className="border-t border-border/60 bg-muted/10 px-4 py-8 sm:px-6">
+        <div className="mx-auto grid w-full max-w-6xl gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          <div>
+            <p className="text-sm font-medium tracking-tight text-foreground">UseMark</p>
+            <p className="mt-1 max-w-xs text-xs text-muted-foreground">
+              © {new Date().getFullYear()} UseMark. Calm bookmarking for daily use.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 sm:justify-start lg:justify-center">
+            <Link to="/terms" className={buttonVariants({ variant: "ghost", size: "sm" })}>
+              Terms & Conditions
+            </Link>
+            <Link to="/signup" className={buttonVariants({ variant: "ghost", size: "sm" })}>
+              Create account
+            </Link>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 sm:justify-start lg:justify-end">
+            <Link to="/login" className={buttonVariants({ variant: "ghost", size: "sm" })}>
+              Sign in
+            </Link>
+            <Link to="/signup" className={buttonVariants({ variant: "outline", size: "sm" })}>
+              Get started
+            </Link>
+          </div>
+        </div>
       </footer>
     </div>
   );

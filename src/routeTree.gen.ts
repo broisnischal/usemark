@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as TermsRouteImport } from './routes/terms'
 import { Route as GuestRouteRouteImport } from './routes/_guest/route'
 import { Route as AuthRouteRouteImport } from './routes/_auth/route'
 import { Route as IndexRouteImport } from './routes/index'
@@ -36,6 +37,11 @@ import { Route as AuthAppLearnRouteImport } from './routes/_auth/app/learn'
 import { Route as AuthAppHelpRouteImport } from './routes/_auth/app/help'
 import { Route as AuthAppFeedsRouteImport } from './routes/_auth/app/feeds'
 
+const TermsRoute = TermsRouteImport.update({
+  id: '/terms',
+  path: '/terms',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const GuestRouteRoute = GuestRouteRouteImport.update({
   id: '/_guest',
   getParentRoute: () => rootRouteImport,
@@ -168,6 +174,7 @@ const AuthAppFeedsRoute = AuthAppFeedsRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/terms': typeof TermsRoute
   '/app': typeof AuthAppRouteRouteWithChildren
   '/login': typeof GuestLoginRoute
   '/signup': typeof GuestSignupRoute
@@ -194,6 +201,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/terms': typeof TermsRoute
   '/login': typeof GuestLoginRoute
   '/signup': typeof GuestSignupRoute
   '/api/bookmark-folders': typeof ApiBookmarkFoldersRouteWithChildren
@@ -222,6 +230,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_auth': typeof AuthRouteRouteWithChildren
   '/_guest': typeof GuestRouteRouteWithChildren
+  '/terms': typeof TermsRoute
   '/_auth/app': typeof AuthAppRouteRouteWithChildren
   '/_guest/login': typeof GuestLoginRoute
   '/_guest/signup': typeof GuestSignupRoute
@@ -250,6 +259,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/terms'
     | '/app'
     | '/login'
     | '/signup'
@@ -276,6 +286,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/terms'
     | '/login'
     | '/signup'
     | '/api/bookmark-folders'
@@ -303,6 +314,7 @@ export interface FileRouteTypes {
     | '/'
     | '/_auth'
     | '/_guest'
+    | '/terms'
     | '/_auth/app'
     | '/_guest/login'
     | '/_guest/signup'
@@ -332,6 +344,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRouteRoute: typeof AuthRouteRouteWithChildren
   GuestRouteRoute: typeof GuestRouteRouteWithChildren
+  TermsRoute: typeof TermsRoute
   ApiBookmarkFoldersRoute: typeof ApiBookmarkFoldersRouteWithChildren
   ApiBookmarksRoute: typeof ApiBookmarksRouteWithChildren
   ApiInngestRoute: typeof ApiInngestRoute
@@ -347,6 +360,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/terms': {
+      id: '/terms'
+      path: '/terms'
+      fullPath: '/terms'
+      preLoaderRoute: typeof TermsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_guest': {
       id: '/_guest'
       path: ''
@@ -609,6 +629,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRouteRoute: AuthRouteRouteWithChildren,
   GuestRouteRoute: GuestRouteRouteWithChildren,
+  TermsRoute: TermsRoute,
   ApiBookmarkFoldersRoute: ApiBookmarkFoldersRouteWithChildren,
   ApiBookmarksRoute: ApiBookmarksRouteWithChildren,
   ApiInngestRoute: ApiInngestRoute,

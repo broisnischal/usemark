@@ -206,6 +206,23 @@ function decodeXmlEntities(value: string) {
     .trim();
 }
 
+function parseEmbeddingVectorJson(embeddingValue: string | null): number[] | null {
+  if (!embeddingValue) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(embeddingValue) as unknown;
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+    const numeric = parsed.filter((item): item is number => typeof item === "number");
+    return numeric.length > 0 ? numeric : null;
+  } catch {
+    return null;
+  }
+}
+
 function readXmlTag(source: string, tagName: string) {
   const match = source.match(
     new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`, "i"),
@@ -1541,6 +1558,8 @@ export async function pruneRssBookmarksForFolder(
           eq(bookmark.folderId, folder.id),
           isNotNull(bookmark.sourceItemId),
           eq(bookmark.saveForLater, false),
+          eq(bookmark.isImportant, false),
+          eq(bookmark.visibility, "private"),
           lte(bookmark.createdAt, retentionCutoff),
         ),
       )
@@ -1565,6 +1584,8 @@ export async function pruneRssBookmarksForFolder(
           eq(bookmark.folderId, folder.id),
           isNotNull(bookmark.sourceItemId),
           eq(bookmark.saveForLater, false),
+          eq(bookmark.isImportant, false),
+          eq(bookmark.visibility, "private"),
         ),
       )
       .orderBy(desc(bookmark.createdAt))
@@ -1795,6 +1816,61 @@ export async function processBookmarkEmbedding(
       })
       .where(eq(bookmark.id, bookmarkId));
     return;
+  }
+
+  if (!options.force) {
+    const existingEmbedded = await db
+      .select({
+        id: bookmark.id,
+        title: bookmark.title,
+        embedding: bookmark.embedding,
+        embeddingModel: bookmark.embeddingModel,
+        embeddedAt: bookmark.embeddedAt,
+      })
+      .from(bookmark)
+      .where(
+        and(
+          eq(bookmark.userId, row.bookmark.userId),
+          eq(bookmark.url, row.bookmark.url),
+          eq(bookmark.contentType, row.bookmark.contentType),
+          eq(bookmark.embeddingStatus, "ready"),
+        ),
+      )
+      .orderBy(desc(bookmark.embeddedAt), desc(bookmark.updatedAt))
+      .limit(5);
+    const reusable = existingEmbedded.find((candidate) => candidate.id !== bookmarkId);
+    const reusableVector = parseEmbeddingVectorJson(reusable?.embedding ?? null);
+    if (reusable && reusableVector) {
+      await upsertBookmarkEmbeddingChunks({
+        userId: row.bookmark.userId,
+        bookmarkId,
+        chunkTexts: [
+          toEmbeddingText({
+            url: row.bookmark.url,
+            contentType: row.bookmark.contentType,
+            title: reusable.title ?? row.bookmark.title,
+            note: row.bookmark.note,
+            folder: row.bookmark_folder.name,
+            tag: row.bookmark.tag,
+            createdAt: row.bookmark.createdAt,
+          }),
+        ],
+        chunkVectors: [reusableVector],
+      });
+
+      await db
+        .update(bookmark)
+        .set({
+          embedding: JSON.stringify(reusableVector),
+          embeddingModel: reusable.embeddingModel ?? getEmbeddingModelName(),
+          embeddingStatus: "ready",
+          embeddingError: null,
+          embeddedAt: reusable.embeddedAt ?? new Date(),
+          title: row.bookmark.title ?? reusable.title,
+        })
+        .where(eq(bookmark.id, bookmarkId));
+      return;
+    }
   }
 
   await db

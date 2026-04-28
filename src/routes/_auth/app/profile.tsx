@@ -1,4 +1,11 @@
-import { SiDevdotto, SiGithub, SiGoogle, SiMedium, SiX } from "@icons-pack/react-simple-icons";
+import {
+  SiDevdotto,
+  SiGithub,
+  SiGoogle,
+  SiMedium,
+  SiReddit,
+  SiX,
+} from "@icons-pack/react-simple-icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import {
@@ -453,7 +460,7 @@ function ProfilePage() {
               <p className="mb-3 text-xs font-medium tracking-wide text-muted-foreground uppercase">
                 Feeds & publishing
               </p>
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 {(profile.availableProviders.medium ?? true) ? (
                   <div className="flex flex-col rounded-xl border border-border/70 bg-muted/10 p-4">
                     <span className="mb-3 flex size-10 items-center justify-center rounded-lg border border-border/60 bg-background">
@@ -521,6 +528,36 @@ function ProfilePage() {
                     </div>
                   </div>
                 ) : null}
+                <div className="flex flex-col rounded-xl border border-border/70 bg-muted/10 p-4">
+                  <span className="mb-3 flex size-10 items-center justify-center rounded-lg border border-border/60 bg-background">
+                    <SiReddit className="size-5" />
+                  </span>
+                  <p className="text-sm font-semibold">Reddit</p>
+                  <p className="mt-1 flex-1 text-xs leading-relaxed text-muted-foreground">
+                    Open your Reddit feeds page and copy any feed URL to follow it as a live folder
+                    on Marks.
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Link
+                      to="/app"
+                      className={cn(buttonVariants({ variant: "secondary", size: "sm" }))}
+                    >
+                      Open Marks
+                    </Link>
+                    <a
+                      href="https://www.reddit.com/prefs/feeds/"
+                      target="_blank"
+                      rel="noreferrer"
+                      className={cn(
+                        buttonVariants({ variant: "ghost", size: "sm" }),
+                        "inline-flex gap-1 no-underline",
+                      )}
+                    >
+                      Reddit feeds
+                      <ExternalLinkIcon className="size-3.5" />
+                    </a>
+                  </div>
+                </div>
                 <div className="flex flex-col rounded-xl border border-border/70 bg-muted/10 p-4">
                   <span className="mb-3 flex size-10 items-center justify-center rounded-lg border border-border/60 bg-background">
                     <RssIcon className="size-5 text-orange-600 dark:text-orange-400" />

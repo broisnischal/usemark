@@ -867,6 +867,17 @@ function getFolderDisplayName(folder: Pick<BookmarkFolderRecord, "name" | "sourc
   return folder.name;
 }
 
+function getFolderSyncDotClass(folder: Pick<BookmarkFolderRecord, "name" | "sourceType">) {
+  if (!isTodoFolderRecord(folder)) {
+    return "bg-emerald-500";
+  }
+  const normalizedDisplayName = getFolderDisplayName(folder).trim().toLowerCase();
+  if (normalizedDisplayName.includes("plan")) {
+    return "bg-violet-500";
+  }
+  return "bg-sky-500";
+}
+
 function FolderSourceIcon({
   folder,
 }: {
@@ -958,7 +969,10 @@ function MarksFolderPickerChip({
           <PinIcon className="size-3 shrink-0 fill-current text-muted-foreground" />
         ) : null}
         {folder.syncEnabled ? (
-          <span className="ml-0.5 size-1.5 shrink-0 rounded-full bg-emerald-500" title="Sync on" />
+          <span
+            className={cn("ml-0.5 size-1.5 shrink-0 rounded-full", getFolderSyncDotClass(folder))}
+            title="Sync on"
+          />
         ) : null}
         {folder.unseenCount > 0 ? (
           <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] text-primary-foreground">
