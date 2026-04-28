@@ -14,6 +14,9 @@ export const user = sqliteTable("user", {
   image: text("image"),
   utmEnabled: integer("utm_enabled", { mode: "boolean" }).notNull().default(false),
   utmSource: text("utm_source").notNull().default("usemark"),
+  starterFeedsApplied: integer("starter_feeds_applied", { mode: "boolean" })
+    .notNull()
+    .default(false),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).default(defaultTimestampMs).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" })
     .default(defaultTimestampMs)

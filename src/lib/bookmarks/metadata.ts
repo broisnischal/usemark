@@ -126,6 +126,7 @@ async function fetchYoutubeMetadata(url: string) {
     const response = await fetch(
       `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(url)}`,
       {
+        cache: "no-store",
         headers: {
           Accept: "application/json",
           "User-Agent": "UseMarkBot/1.0 (+bookmark metadata)",
@@ -156,6 +157,7 @@ async function fetchHtmlMetadata(url: string) {
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   const response = await fetch(url, {
     method: "GET",
+    cache: "no-store",
     redirect: "follow",
     signal: controller.signal,
     headers: {
@@ -185,8 +187,12 @@ async function fetchHtmlMetadata(url: string) {
   }
   const $ = loadHtml(html);
 
-  // Remove noisy nodes before extracting document text.
-  $("script,style,noscript,svg,canvas,iframe,template").remove();
+  // Remove noisy nodes before extracting document text (nav/chrome, not article body).
+  $(
+    "script,style,noscript,svg,canvas,iframe,template,nav,footer,aside,header," +
+      "[role=navigation],[role=banner],[role=complementary],[role=contentinfo]," +
+      "[data-cookie],[class*=cookie],[id*=cookie],[class*=consent],[id*=consent]",
+  ).remove();
 
   const title =
     readMeta($, ["og:title", "twitter:title"]) ||

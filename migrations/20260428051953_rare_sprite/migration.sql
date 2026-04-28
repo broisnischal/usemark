@@ -1,0 +1,1 @@
+ALTER TABLE `user` ADD `starter_feeds_applied` integer DEFAULT false NOT NULL;

@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, Link, Outlet, useRouter } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet, useRouter, useRouterState } from "@tanstack/react-router";
 import {
   BookmarkIcon,
   BugIcon,
@@ -9,6 +9,7 @@ import {
   MonitorIcon,
   MoonIcon,
   PaletteIcon,
+  RssIcon,
   Settings2Icon,
   SunIcon,
 } from "lucide-react";
@@ -39,6 +40,9 @@ function AppLayout() {
   const { theme, setTheme } = useTheme();
   const queryClient = useQueryClient();
   const router = useRouter();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const marksNavActive = pathname === "/app" || pathname === "/app/";
+  const feedsNavActive = pathname.startsWith("/app/feeds");
 
   const signOut = async () => {
     await authClient.signOut({
@@ -71,6 +75,34 @@ function AppLayout() {
             U
           </Link>
 
+          <nav
+            className="flex flex-1 items-center justify-center gap-1 sm:justify-start sm:pl-2"
+            aria-label="App"
+          >
+            <Link
+              to="/app"
+              className={
+                marksNavActive
+                  ? "inline-flex items-center gap-1.5 rounded-md bg-muted px-3 py-1.5 text-sm font-medium text-foreground"
+                  : "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+              }
+            >
+              <BookmarkIcon className="size-3.5" />
+              Marks
+            </Link>
+            <Link
+              to="/app/feeds"
+              className={
+                feedsNavActive
+                  ? "inline-flex items-center gap-1.5 rounded-md bg-muted px-3 py-1.5 text-sm font-medium text-foreground"
+                  : "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+              }
+            >
+              <RssIcon className="size-3.5" />
+              Feeds
+            </Link>
+          </nav>
+
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
@@ -91,10 +123,6 @@ function AppLayout() {
                 </DropdownMenuItem>
               </DropdownMenuGroup>
               <DropdownMenuSeparator />
-              <DropdownMenuItem render={<Link to="/app" />}>
-                <BookmarkIcon />
-                Marks
-              </DropdownMenuItem>
               <DropdownMenuItem render={<Link to="/app/help" />}>
                 <CircleHelpIcon />
                 Help & Support

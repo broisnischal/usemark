@@ -10,6 +10,7 @@ import {
   pinBookmarkFolderForUser,
   syncGitHubBookmarkFolder,
   syncRssBookmarkFolder,
+  unfollowRssBookmarkFolderForUser,
   updateRssFolderSettingsForUser,
   type BookmarkFolderSourceType,
 } from "@/lib/bookmarks/functions";
@@ -18,6 +19,7 @@ import {
   normalizeGitHubResourceType,
   toGitHubExternalResourceId,
 } from "@/lib/bookmarks/github";
+import { ensureStarterRssFoldersForUser } from "@/lib/bookmarks/starter-feeds";
 import { inngest } from "@/lib/inngest/client";
 
 const RSS_IMMEDIATE_INSERT_LIMIT = 15;
@@ -148,6 +150,7 @@ export const Route = createFileRoute("/api/bookmark-folders")({
           return Response.json({ error: "Unauthorized" }, { status: 401 });
         }
 
+        await ensureStarterRssFoldersForUser(userId);
         const folders = await listBookmarkFoldersForUser(userId);
         return Response.json(folders);
       },
@@ -334,10 +337,32 @@ export const Route = createFileRoute("/api/bookmark-folders")({
           return Response.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        const payload = (await request.json()) as { id?: string };
+        const payload = (await request.json()) as { id?: string; action?: string };
         const folderId = payload.id?.trim() ?? "";
         if (!folderId) {
           return Response.json({ error: "Folder id is required." }, { status: 400 });
+        }
+
+        if (payload.action === "unfollow") {
+          const result = await unfollowRssBookmarkFolderForUser(userId, folderId);
+          if (result.status === "not-found") {
+            return Response.json({ error: "Folder not found." }, { status: 404 });
+          }
+          if (result.status === "not-rss") {
+            return Response.json({ error: "Only RSS folders can be unfollowed." }, { status: 400 });
+          }
+          if (result.status === "protected") {
+            return Response.json(
+              { error: "The default folder cannot be deleted." },
+              { status: 400 },
+            );
+          }
+          return Response.json({
+            success: true,
+            id: folderId,
+            movedImportant: result.movedImportant,
+            importantFolderId: result.importantFolderId ?? null,
+          });
         }
 
         const deleteResult = await deleteBookmarkFolderForUser(userId, folderId);

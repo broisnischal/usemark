@@ -23,14 +23,6 @@
   ],
   "preview_urls": true,
   "compatibility_flags": ["nodejs_compat"],
-  /**
-   * Paid Workers only — raises per-request CPU (default ~30s on paid vs ~10ms on free).
-   * Free tier cannot raise this; fix 1102 there = reduce Worker CPU (see root devtools prod exclusion).
-   */
-  "limits": {
-    "cpu_ms": 30000,
-    // "subrequests": 100,
-  },
   "main": "@tanstack/react-start/server-entry",
   "vars": {
     "VITE_BASE_URL": "https://shop.lexicon.website/",
@@ -58,7 +50,26 @@
       "remote": false,
     },
   ],
+  // Hyperdrive = Postgres/MySQL over TCP (pooling + query cache). It does NOT apply to D1.
+  // To use: `wrangler hyperdrive create <name> --connection-string="postgres://..."` then add:
+  // "hyperdrive": [
+  //   {
+  //     "binding": "HYPERDRIVE",
+  //     "id": "<uuid from wrangler output>",
+  //     "localConnectionString": "postgres://user:pass@localhost:5432/db"
+  //   }
+  // ],
+  // Then: `bunx wrangler types` and use `getHyperdrivePostgresUrl()` from src/lib/cf/hyperdrive.ts with `pg`.
   "ai": {
     "binding": "AI",
   },
+  // Create index once: `bunx wrangler vectorize create bookmark-semantic --dimensions=768 --metric=cosine`
+  // Vectors use per-user namespaces (no extra metadata indexes required).
+  "vectorize": [
+    {
+      "binding": "BOOKMARK_VECTORS",
+      "index_name": "bookmark-semantic",
+      "remote": true,
+    },
+  ],
 }

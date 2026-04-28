@@ -3,6 +3,13 @@ import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, or } from "drizzle
 import { db } from "@/lib/db";
 import { bookmark, bookmarkFolder, user } from "@/lib/db/schema";
 
+import {
+  deleteBookmarkVectorsForUser,
+  getBookmarkVectorize,
+  queryBookmarkVectorScores,
+  upsertBookmarkEmbeddingChunks,
+} from "./bookmark-vectorize";
+import { meanEmbeddingVectors, splitTextForEmbeddingChunks } from "./embedding-chunks";
 import { cosineSimilarity, embedText, getEmbeddingModelName, toEmbeddingText } from "./embeddings";
 import { GitHubApiError, listGitHubItemsForUser } from "./github";
 import { fetchBookmarkMetadata } from "./metadata";
@@ -94,6 +101,7 @@ interface RssItem {
 }
 
 const RSS_MAX_ACTIVE_ITEMS = 100;
+const RSS_UNSAVED_RETENTION_DAYS = 7;
 const RSS_MIN_FETCH_LIMIT = 10;
 const RSS_MAX_FETCH_LIMIT = 500;
 const RSS_MIN_KEEP_RECENT_COUNT = 20;
@@ -232,6 +240,7 @@ function getRssFetchUrl(feedUrl: string) {
 
 export async function fetchRssChannelName(feedUrl: string) {
   const response = await fetch(getRssFetchUrl(feedUrl), {
+    cache: "no-store",
     headers: {
       Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml",
       "User-Agent": "UseMarkBot/1.0 (+live folder discovery)",
@@ -1039,6 +1048,8 @@ export async function deleteBookmarkForUser(userId: string, bookmarkId: string) 
     return false;
   }
 
+  await deleteBookmarkVectorsForUser(userId, [normalizedBookmarkId]);
+
   await db
     .delete(bookmark)
     .where(and(eq(bookmark.userId, userId), eq(bookmark.id, normalizedBookmarkId)));
@@ -1062,6 +1073,8 @@ export async function deleteBookmarksForUser(userId: string, bookmarkIds: string
   if (existingIds.length === 0) {
     return { deletedCount: 0 };
   }
+
+  await deleteBookmarkVectorsForUser(userId, existingIds);
 
   await db
     .delete(bookmark)
@@ -1230,11 +1243,86 @@ export async function deleteBookmarkFolderForUser(userId: string, folderId: stri
     return "protected";
   }
 
+  const folderBookmarkIds = await db
+    .select({ id: bookmark.id })
+    .from(bookmark)
+    .where(eq(bookmark.folderId, normalizedFolderId));
+  await deleteBookmarkVectorsForUser(
+    userId,
+    folderBookmarkIds.map((row) => row.id),
+  );
+
   await db
     .delete(bookmarkFolder)
     .where(and(eq(bookmarkFolder.userId, userId), eq(bookmarkFolder.id, normalizedFolderId)));
 
   return "deleted";
+}
+
+export async function unfollowRssBookmarkFolderForUser(userId: string, folderId: string) {
+  const normalizedFolderId = folderId.trim();
+  if (!normalizedFolderId) {
+    throw new Error("Folder id is required.");
+  }
+
+  const existing = await db
+    .select({
+      id: bookmarkFolder.id,
+      name: bookmarkFolder.name,
+      sourceType: bookmarkFolder.sourceType,
+    })
+    .from(bookmarkFolder)
+    .where(and(eq(bookmarkFolder.userId, userId), eq(bookmarkFolder.id, normalizedFolderId)))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!existing) {
+    return { status: "not-found" as const, movedImportant: 0 };
+  }
+
+  if (existing.sourceType !== "rss") {
+    return { status: "not-rss" as const, movedImportant: 0 };
+  }
+
+  const importantFolder = await createBookmarkFolderForUser(userId, {
+    name: "important",
+    sourceType: "local",
+    syncEnabled: false,
+  });
+
+  const importantRows = await db
+    .select({ id: bookmark.id })
+    .from(bookmark)
+    .where(
+      and(
+        eq(bookmark.userId, userId),
+        eq(bookmark.folderId, normalizedFolderId),
+        eq(bookmark.isImportant, true),
+      ),
+    );
+
+  if (importantRows.length > 0) {
+    await db
+      .update(bookmark)
+      .set({ folderId: importantFolder.id })
+      .where(
+        inArray(
+          bookmark.id,
+          importantRows.map((row) => row.id),
+        ),
+      );
+  }
+
+  const deleteResult = await deleteBookmarkFolderForUser(userId, normalizedFolderId);
+  if (deleteResult !== "deleted") {
+    return { status: deleteResult, movedImportant: 0 } as const;
+  }
+
+  return {
+    status: "unfollowed" as const,
+    movedImportant: importantRows.length,
+    importantFolderId: importantFolder.id,
+  };
 }
 
 export async function pinBookmarkFolderForUser(userId: string, folderId: string) {
@@ -1311,19 +1399,36 @@ export async function syncRssBookmarkFolder(
     };
   }
 
-  const response = await fetch(getRssFetchUrl(folder.externalResourceId), {
-    headers: {
-      Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml",
-      "User-Agent": "UseMarkBot/1.0 (+live folder sync)",
-    },
-  });
+  let items: RssItem[] = [];
+  try {
+    const response = await fetch(getRssFetchUrl(folder.externalResourceId), {
+      cache: "no-store",
+      headers: {
+        Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml",
+        "User-Agent": "UseMarkBot/1.0 (+live folder sync)",
+      },
+    });
 
-  if (!response.ok) {
-    throw new Error("Could not fetch RSS feed.");
+    // Fail gracefully so "sync now" doesn't hard-500 the UI for flaky feeds.
+    if (!response.ok) {
+      return {
+        userId: folder.userId,
+        added: 0,
+        bookmarkIds: [] as string[],
+        deferredItems: [],
+      };
+    }
+
+    const xml = await response.text();
+    items = parseRssItems(xml, normalizeRssFetchLimit(folder.rssFetchLimit));
+  } catch {
+    return {
+      userId: folder.userId,
+      added: 0,
+      bookmarkIds: [] as string[],
+      deferredItems: [],
+    };
   }
-
-  const xml = await response.text();
-  const items = parseRssItems(xml, normalizeRssFetchLimit(folder.rssFetchLimit));
   const existingSourceItemIds = await listExistingSourceItemIdsForFolder(
     folder.userId,
     folder.id,
@@ -1372,32 +1477,129 @@ export async function syncRssBookmarkFolder(
     })
     .where(eq(bookmarkFolder.id, folder.id));
 
-  const keepRecentCount = normalizeRssKeepRecentCount(folder.rssKeepRecentCount);
-  const orderedRssIds = await db
-    .select({ id: bookmark.id })
-    .from(bookmark)
-    .where(
-      and(
-        eq(bookmark.userId, folder.userId),
-        eq(bookmark.folderId, folder.id),
-        isNotNull(bookmark.sourceItemId),
-      ),
-    )
-    .orderBy(desc(bookmark.createdAt))
-    .limit(keepRecentCount + RSS_INSERT_CHUNK_SIZE);
-  const idsToDelete = orderedRssIds.slice(keepRecentCount).map((row) => row.id);
-  if (idsToDelete.length > 0) {
-    for (let index = 0; index < idsToDelete.length; index += RSS_INSERT_CHUNK_SIZE) {
-      const deleteChunk = idsToDelete.slice(index, index + RSS_INSERT_CHUNK_SIZE);
-      await db.delete(bookmark).where(inArray(bookmark.id, deleteChunk));
-    }
-  }
+  await pruneRssBookmarksForFolder(folder.id, {
+    retentionDays: RSS_UNSAVED_RETENTION_DAYS,
+    keepRecentCount: normalizeRssKeepRecentCount(folder.rssKeepRecentCount),
+  });
 
   return {
     userId: folder.userId,
     added: addedCount,
     bookmarkIds: immediateResult.createdIds,
     deferredItems: deferredCandidates,
+  };
+}
+
+interface PruneRssBookmarksOptions {
+  retentionDays?: number;
+  keepRecentCount?: number;
+}
+
+export async function pruneRssBookmarksForFolder(
+  folderId: string,
+  options: PruneRssBookmarksOptions = {},
+) {
+  const normalizedFolderId = folderId.trim();
+  if (!normalizedFolderId) {
+    return { deletedCount: 0 };
+  }
+
+  const folder = await db
+    .select({
+      id: bookmarkFolder.id,
+      userId: bookmarkFolder.userId,
+      sourceType: bookmarkFolder.sourceType,
+      rssKeepRecentCount: bookmarkFolder.rssKeepRecentCount,
+    })
+    .from(bookmarkFolder)
+    .where(eq(bookmarkFolder.id, normalizedFolderId))
+    .limit(1)
+    .then((rows) => rows[0]);
+  if (!folder || folder.sourceType !== "rss") {
+    return { deletedCount: 0 };
+  }
+
+  const retentionDays =
+    typeof options.retentionDays === "number" && Number.isFinite(options.retentionDays)
+      ? Math.max(1, Math.floor(options.retentionDays))
+      : RSS_UNSAVED_RETENTION_DAYS;
+  const keepRecentCount = normalizeRssKeepRecentCount(
+    typeof options.keepRecentCount === "number"
+      ? options.keepRecentCount
+      : folder.rssKeepRecentCount,
+  );
+  const retentionCutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1_000);
+
+  let deletedCount = 0;
+  while (true) {
+    const oldIds = await db
+      .select({ id: bookmark.id })
+      .from(bookmark)
+      .where(
+        and(
+          eq(bookmark.userId, folder.userId),
+          eq(bookmark.folderId, folder.id),
+          isNotNull(bookmark.sourceItemId),
+          eq(bookmark.saveForLater, false),
+          lte(bookmark.createdAt, retentionCutoff),
+        ),
+      )
+      .limit(RSS_INSERT_CHUNK_SIZE);
+    if (oldIds.length === 0) {
+      break;
+    }
+
+    const chunkIds = oldIds.map((row) => row.id);
+    await deleteBookmarkVectorsForUser(folder.userId, chunkIds);
+    await db.delete(bookmark).where(inArray(bookmark.id, chunkIds));
+    deletedCount += chunkIds.length;
+  }
+
+  while (true) {
+    const orderedUnsavedRssIds = await db
+      .select({ id: bookmark.id })
+      .from(bookmark)
+      .where(
+        and(
+          eq(bookmark.userId, folder.userId),
+          eq(bookmark.folderId, folder.id),
+          isNotNull(bookmark.sourceItemId),
+          eq(bookmark.saveForLater, false),
+        ),
+      )
+      .orderBy(desc(bookmark.createdAt))
+      .limit(keepRecentCount + RSS_INSERT_CHUNK_SIZE);
+
+    const overflowIds = orderedUnsavedRssIds.slice(keepRecentCount).map((row) => row.id);
+    if (overflowIds.length === 0) {
+      break;
+    }
+
+    await deleteBookmarkVectorsForUser(folder.userId, overflowIds);
+    await db.delete(bookmark).where(inArray(bookmark.id, overflowIds));
+    deletedCount += overflowIds.length;
+  }
+
+  return { deletedCount };
+}
+
+export async function pruneRssBookmarksForDueFolders() {
+  const folderIds = await db
+    .select({ id: bookmarkFolder.id })
+    .from(bookmarkFolder)
+    .where(and(eq(bookmarkFolder.sourceType, "rss"), eq(bookmarkFolder.syncEnabled, true)));
+
+  let deletedCount = 0;
+  for (const row of folderIds) {
+    const result = await pruneRssBookmarksForFolder(row.id, {
+      retentionDays: RSS_UNSAVED_RETENTION_DAYS,
+    });
+    deletedCount += result.deletedCount;
+  }
+
+  return {
+    folderCount: folderIds.length,
+    deletedCount,
   };
 }
 
@@ -1566,6 +1768,22 @@ export async function processBookmarkEmbedding(
     return;
   }
 
+  // Todo/task folders are plain text workflows; skip semantic embedding/indexing for them.
+  if (row.bookmark_folder.sourceType === "todo") {
+    await deleteBookmarkVectorsForUser(row.bookmark.userId, [bookmarkId]);
+    await db
+      .update(bookmark)
+      .set({
+        embedding: null,
+        embeddingModel: null,
+        embeddingStatus: "skipped",
+        embeddingError: null,
+        embeddedAt: null,
+      })
+      .where(eq(bookmark.id, bookmarkId));
+    return;
+  }
+
   await db
     .update(bookmark)
     .set({
@@ -1593,7 +1811,17 @@ export async function processBookmarkEmbedding(
     const embeddingText = pageMetadata?.semanticText
       ? `${baseEmbeddingText}\npage_content: ${pageMetadata.semanticText}`
       : baseEmbeddingText;
-    const embeddingVector = await embedText(embeddingText);
+    const chunks = splitTextForEmbeddingChunks(embeddingText);
+    const chunkInputs = chunks.length > 0 ? chunks : [embeddingText.trim() || baseEmbeddingText];
+    const chunkVectors = await Promise.all(chunkInputs.map((chunk) => embedText(chunk)));
+    const embeddingVector = meanEmbeddingVectors(chunkVectors);
+
+    await upsertBookmarkEmbeddingChunks({
+      userId: row.bookmark.userId,
+      bookmarkId,
+      chunkTexts: chunkInputs,
+      chunkVectors,
+    });
 
     await db
       .update(bookmark)
@@ -1617,55 +1845,23 @@ export async function processBookmarkEmbedding(
   }
 }
 
-export async function searchBookmarksForUser(userId: string, data: SearchBookmarkInput) {
-  const query = data.query?.trim();
-  if (!query) {
-    return [] satisfies BookmarkRecord[];
-  }
-  const expandedQuery = expandQueryWithAliases(query);
-  const effectiveQuery = expandedQuery.length > 0 ? expandedQuery : query;
+type BookmarkSearchJoinRow = {
+  bookmark: typeof bookmark.$inferSelect;
+  bookmark_folder: typeof bookmarkFolder.$inferSelect;
+};
 
-  const dateFilter = parseRelativeDateRange(query);
-  const whereClause = dateFilter
-    ? and(
-        eq(bookmark.userId, userId),
-        gte(bookmark.createdAt, dateFilter.start),
-        lte(bookmark.createdAt, dateFilter.end),
-      )
-    : eq(bookmark.userId, userId);
-
-  const rows = await db
-    .select()
-    .from(bookmark)
-    .innerJoin(bookmarkFolder, eq(bookmark.folderId, bookmarkFolder.id))
-    .where(whereClause)
-    .orderBy(desc(bookmark.createdAt));
-
-  if (rows.length === 0) {
-    return [] satisfies BookmarkRecord[];
-  }
-
-  const queryEmbedding = await embedText(effectiveQuery);
+function rankBookmarkJoinRows(
+  rows: BookmarkSearchJoinRow[],
+  effectiveQuery: string,
+  getSemanticScore: (row: BookmarkSearchJoinRow) => number,
+): BookmarkRecord[] {
   const loweredQuery = effectiveQuery.toLowerCase();
   const queryTokens = tokenize(effectiveQuery);
   const queryTokenSet = new Set(queryTokens);
 
-  const ranked = rows
+  return rows
     .map((row) => {
-      let rowEmbedding: number[] = [];
-      try {
-        if (row.bookmark.embedding) {
-          const parsed = JSON.parse(row.bookmark.embedding) as unknown;
-          if (Array.isArray(parsed)) {
-            rowEmbedding = parsed.filter((item): item is number => typeof item === "number");
-          }
-        }
-      } catch {
-        rowEmbedding = [];
-      }
-
-      const semanticScore =
-        rowEmbedding.length > 0 ? cosineSimilarity(queryEmbedding, rowEmbedding) : 0;
+      const semanticScore = getSemanticScore(row);
 
       const searchableText = [
         row.bookmark.url,
@@ -1720,13 +1916,12 @@ export async function searchBookmarksForUser(userId: string, data: SearchBookmar
         hostOrFolderMatchBoost > 0 ||
         tagStartsWithQueryTokenBoost > 0;
 
-      // For short, intent-like queries ("google searches"), heavily favor lexical/domain matches.
       const adjustedScore = queryTokenSet.size <= 4 && hasAnyLexicalSignal ? score + 0.2 : score;
       return { row, score: adjustedScore };
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, 20)
-    .map((item, index, items) => {
+    .map((item, _index, items) => {
       const topScore = items[0]?.score ?? 0;
       const normalizedMatchScore =
         topScore > 0 ? Math.round(Math.max(0, Math.min(1, item.score / topScore)) * 100) : 0;
@@ -1748,6 +1943,73 @@ export async function searchBookmarksForUser(userId: string, data: SearchBookmar
         createdAt: item.row.bookmark.createdAt,
       });
     });
+}
 
-  return ranked;
+export async function searchBookmarksForUser(userId: string, data: SearchBookmarkInput) {
+  const query = data.query?.trim();
+  if (!query) {
+    return [] satisfies BookmarkRecord[];
+  }
+  const expandedQuery = expandQueryWithAliases(query);
+  const effectiveQuery = expandedQuery.length > 0 ? expandedQuery : query;
+
+  const dateFilter = parseRelativeDateRange(query);
+  const whereClause = dateFilter
+    ? and(
+        eq(bookmark.userId, userId),
+        gte(bookmark.createdAt, dateFilter.start),
+        lte(bookmark.createdAt, dateFilter.end),
+      )
+    : eq(bookmark.userId, userId);
+
+  const semanticQueryEmbedding = await embedText(query);
+
+  if (getBookmarkVectorize()) {
+    try {
+      const vecScores = await queryBookmarkVectorScores(userId, semanticQueryEmbedding, 96);
+      if (vecScores.size > 0) {
+        const vectorRows = await db
+          .select()
+          .from(bookmark)
+          .innerJoin(bookmarkFolder, eq(bookmark.folderId, bookmarkFolder.id))
+          .where(and(whereClause, inArray(bookmark.id, [...vecScores.keys()])));
+
+        if (vectorRows.length > 0) {
+          return rankBookmarkJoinRows(
+            vectorRows,
+            effectiveQuery,
+            (row) => vecScores.get(row.bookmark.id) ?? 0,
+          );
+        }
+      }
+    } catch {
+      // Fall through to legacy scan (local dev, transient errors, or empty index).
+    }
+  }
+
+  const rows = await db
+    .select()
+    .from(bookmark)
+    .innerJoin(bookmarkFolder, eq(bookmark.folderId, bookmarkFolder.id))
+    .where(whereClause)
+    .orderBy(desc(bookmark.createdAt));
+
+  if (rows.length === 0) {
+    return [] satisfies BookmarkRecord[];
+  }
+
+  return rankBookmarkJoinRows(rows, effectiveQuery, (row) => {
+    let rowEmbedding: number[] = [];
+    try {
+      if (row.bookmark.embedding) {
+        const parsed = JSON.parse(row.bookmark.embedding) as unknown;
+        if (Array.isArray(parsed)) {
+          rowEmbedding = parsed.filter((item): item is number => typeof item === "number");
+        }
+      }
+    } catch {
+      rowEmbedding = [];
+    }
+    return rowEmbedding.length > 0 ? cosineSimilarity(semanticQueryEmbedding, rowEmbedding) : 0;
+  });
 }

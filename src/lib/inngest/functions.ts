@@ -5,6 +5,7 @@ import {
   bookmarkFolderExistsForUser,
   createBookmarksBatchForUser,
   listDueRssBookmarkFolderIds,
+  pruneRssBookmarksForDueFolders,
   processBookmarkEmbedding,
   syncRssBookmarkFolder,
 } from "@/lib/bookmarks/functions";
@@ -240,9 +241,23 @@ export const rssFolderScheduledSync = inngest.createFunction(
   },
 );
 
+export const rssBookmarkCleanupScheduled = inngest.createFunction(
+  {
+    id: "rss-bookmark-cleanup-scheduled",
+    retries: 1,
+    triggers: { cron: "0 */6 * * *" },
+  },
+  async ({ step }) => {
+    await step.run("prune-rss-bookmarks", async () => {
+      return pruneRssBookmarksForDueFolders();
+    });
+  },
+);
+
 export const inngestFunctions = [
   bookmarkIndexRequested,
   bookmarkImportRequested,
   rssFolderSyncRequested,
   rssFolderScheduledSync,
+  rssBookmarkCleanupScheduled,
 ];

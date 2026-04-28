@@ -28,11 +28,13 @@ import { Route as ApiGithubReposRouteImport } from './routes/api/github/repos'
 import { Route as ApiGithubItemsRouteImport } from './routes/api/github/items'
 import { Route as ApiBookmarksSearchRouteImport } from './routes/api/bookmarks.search'
 import { Route as ApiBookmarksAskRouteImport } from './routes/api/bookmarks.ask'
+import { Route as ApiBookmarkFoldersRssBulkRouteImport } from './routes/api/bookmark-folders.rss-bulk'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as AuthAppTermsRouteImport } from './routes/_auth/app/terms'
 import { Route as AuthAppProfileRouteImport } from './routes/_auth/app/profile'
 import { Route as AuthAppLearnRouteImport } from './routes/_auth/app/learn'
 import { Route as AuthAppHelpRouteImport } from './routes/_auth/app/help'
+import { Route as AuthAppFeedsRouteImport } from './routes/_auth/app/feeds'
 
 const GuestRouteRoute = GuestRouteRouteImport.update({
   id: '/_guest',
@@ -127,6 +129,12 @@ const ApiBookmarksAskRoute = ApiBookmarksAskRouteImport.update({
   path: '/ask',
   getParentRoute: () => ApiBookmarksRoute,
 } as any)
+const ApiBookmarkFoldersRssBulkRoute =
+  ApiBookmarkFoldersRssBulkRouteImport.update({
+    id: '/rss-bulk',
+    path: '/rss-bulk',
+    getParentRoute: () => ApiBookmarkFoldersRoute,
+  } as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -152,22 +160,29 @@ const AuthAppHelpRoute = AuthAppHelpRouteImport.update({
   path: '/help',
   getParentRoute: () => AuthAppRouteRoute,
 } as any)
+const AuthAppFeedsRoute = AuthAppFeedsRouteImport.update({
+  id: '/feeds',
+  path: '/feeds',
+  getParentRoute: () => AuthAppRouteRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/app': typeof AuthAppRouteRouteWithChildren
   '/login': typeof GuestLoginRoute
   '/signup': typeof GuestSignupRoute
-  '/api/bookmark-folders': typeof ApiBookmarkFoldersRoute
+  '/api/bookmark-folders': typeof ApiBookmarkFoldersRouteWithChildren
   '/api/bookmarks': typeof ApiBookmarksRouteWithChildren
   '/api/inngest': typeof ApiInngestRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/uploadthing': typeof ApiUploadthingRoute
+  '/app/feeds': typeof AuthAppFeedsRoute
   '/app/help': typeof AuthAppHelpRoute
   '/app/learn': typeof AuthAppLearnRoute
   '/app/profile': typeof AuthAppProfileRoute
   '/app/terms': typeof AuthAppTermsRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/bookmark-folders/rss-bulk': typeof ApiBookmarkFoldersRssBulkRoute
   '/api/bookmarks/ask': typeof ApiBookmarksAskRoute
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
   '/api/github/items': typeof ApiGithubItemsRoute
@@ -181,16 +196,18 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof GuestLoginRoute
   '/signup': typeof GuestSignupRoute
-  '/api/bookmark-folders': typeof ApiBookmarkFoldersRoute
+  '/api/bookmark-folders': typeof ApiBookmarkFoldersRouteWithChildren
   '/api/bookmarks': typeof ApiBookmarksRouteWithChildren
   '/api/inngest': typeof ApiInngestRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/uploadthing': typeof ApiUploadthingRoute
+  '/app/feeds': typeof AuthAppFeedsRoute
   '/app/help': typeof AuthAppHelpRoute
   '/app/learn': typeof AuthAppLearnRoute
   '/app/profile': typeof AuthAppProfileRoute
   '/app/terms': typeof AuthAppTermsRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/bookmark-folders/rss-bulk': typeof ApiBookmarkFoldersRssBulkRoute
   '/api/bookmarks/ask': typeof ApiBookmarksAskRoute
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
   '/api/github/items': typeof ApiGithubItemsRoute
@@ -208,16 +225,18 @@ export interface FileRoutesById {
   '/_auth/app': typeof AuthAppRouteRouteWithChildren
   '/_guest/login': typeof GuestLoginRoute
   '/_guest/signup': typeof GuestSignupRoute
-  '/api/bookmark-folders': typeof ApiBookmarkFoldersRoute
+  '/api/bookmark-folders': typeof ApiBookmarkFoldersRouteWithChildren
   '/api/bookmarks': typeof ApiBookmarksRouteWithChildren
   '/api/inngest': typeof ApiInngestRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/uploadthing': typeof ApiUploadthingRoute
+  '/_auth/app/feeds': typeof AuthAppFeedsRoute
   '/_auth/app/help': typeof AuthAppHelpRoute
   '/_auth/app/learn': typeof AuthAppLearnRoute
   '/_auth/app/profile': typeof AuthAppProfileRoute
   '/_auth/app/terms': typeof AuthAppTermsRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/bookmark-folders/rss-bulk': typeof ApiBookmarkFoldersRssBulkRoute
   '/api/bookmarks/ask': typeof ApiBookmarksAskRoute
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
   '/api/github/items': typeof ApiGithubItemsRoute
@@ -239,11 +258,13 @@ export interface FileRouteTypes {
     | '/api/inngest'
     | '/api/profile'
     | '/api/uploadthing'
+    | '/app/feeds'
     | '/app/help'
     | '/app/learn'
     | '/app/profile'
     | '/app/terms'
     | '/api/auth/$'
+    | '/api/bookmark-folders/rss-bulk'
     | '/api/bookmarks/ask'
     | '/api/bookmarks/search'
     | '/api/github/items'
@@ -262,11 +283,13 @@ export interface FileRouteTypes {
     | '/api/inngest'
     | '/api/profile'
     | '/api/uploadthing'
+    | '/app/feeds'
     | '/app/help'
     | '/app/learn'
     | '/app/profile'
     | '/app/terms'
     | '/api/auth/$'
+    | '/api/bookmark-folders/rss-bulk'
     | '/api/bookmarks/ask'
     | '/api/bookmarks/search'
     | '/api/github/items'
@@ -288,11 +311,13 @@ export interface FileRouteTypes {
     | '/api/inngest'
     | '/api/profile'
     | '/api/uploadthing'
+    | '/_auth/app/feeds'
     | '/_auth/app/help'
     | '/_auth/app/learn'
     | '/_auth/app/profile'
     | '/_auth/app/terms'
     | '/api/auth/$'
+    | '/api/bookmark-folders/rss-bulk'
     | '/api/bookmarks/ask'
     | '/api/bookmarks/search'
     | '/api/github/items'
@@ -307,7 +332,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRouteRoute: typeof AuthRouteRouteWithChildren
   GuestRouteRoute: typeof GuestRouteRouteWithChildren
-  ApiBookmarkFoldersRoute: typeof ApiBookmarkFoldersRoute
+  ApiBookmarkFoldersRoute: typeof ApiBookmarkFoldersRouteWithChildren
   ApiBookmarksRoute: typeof ApiBookmarksRouteWithChildren
   ApiInngestRoute: typeof ApiInngestRoute
   ApiProfileRoute: typeof ApiProfileRoute
@@ -455,6 +480,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiBookmarksAskRouteImport
       parentRoute: typeof ApiBookmarksRoute
     }
+    '/api/bookmark-folders/rss-bulk': {
+      id: '/api/bookmark-folders/rss-bulk'
+      path: '/rss-bulk'
+      fullPath: '/api/bookmark-folders/rss-bulk'
+      preLoaderRoute: typeof ApiBookmarkFoldersRssBulkRouteImport
+      parentRoute: typeof ApiBookmarkFoldersRoute
+    }
     '/api/auth/$': {
       id: '/api/auth/$'
       path: '/api/auth/$'
@@ -490,10 +522,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthAppHelpRouteImport
       parentRoute: typeof AuthAppRouteRoute
     }
+    '/_auth/app/feeds': {
+      id: '/_auth/app/feeds'
+      path: '/feeds'
+      fullPath: '/app/feeds'
+      preLoaderRoute: typeof AuthAppFeedsRouteImport
+      parentRoute: typeof AuthAppRouteRoute
+    }
   }
 }
 
 interface AuthAppRouteRouteChildren {
+  AuthAppFeedsRoute: typeof AuthAppFeedsRoute
   AuthAppHelpRoute: typeof AuthAppHelpRoute
   AuthAppLearnRoute: typeof AuthAppLearnRoute
   AuthAppProfileRoute: typeof AuthAppProfileRoute
@@ -502,6 +542,7 @@ interface AuthAppRouteRouteChildren {
 }
 
 const AuthAppRouteRouteChildren: AuthAppRouteRouteChildren = {
+  AuthAppFeedsRoute: AuthAppFeedsRoute,
   AuthAppHelpRoute: AuthAppHelpRoute,
   AuthAppLearnRoute: AuthAppLearnRoute,
   AuthAppProfileRoute: AuthAppProfileRoute,
@@ -539,6 +580,17 @@ const GuestRouteRouteWithChildren = GuestRouteRoute._addFileChildren(
   GuestRouteRouteChildren,
 )
 
+interface ApiBookmarkFoldersRouteChildren {
+  ApiBookmarkFoldersRssBulkRoute: typeof ApiBookmarkFoldersRssBulkRoute
+}
+
+const ApiBookmarkFoldersRouteChildren: ApiBookmarkFoldersRouteChildren = {
+  ApiBookmarkFoldersRssBulkRoute: ApiBookmarkFoldersRssBulkRoute,
+}
+
+const ApiBookmarkFoldersRouteWithChildren =
+  ApiBookmarkFoldersRoute._addFileChildren(ApiBookmarkFoldersRouteChildren)
+
 interface ApiBookmarksRouteChildren {
   ApiBookmarksAskRoute: typeof ApiBookmarksAskRoute
   ApiBookmarksSearchRoute: typeof ApiBookmarksSearchRoute
@@ -557,7 +609,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRouteRoute: AuthRouteRouteWithChildren,
   GuestRouteRoute: GuestRouteRouteWithChildren,
-  ApiBookmarkFoldersRoute: ApiBookmarkFoldersRoute,
+  ApiBookmarkFoldersRoute: ApiBookmarkFoldersRouteWithChildren,
   ApiBookmarksRoute: ApiBookmarksRouteWithChildren,
   ApiInngestRoute: ApiInngestRoute,
   ApiProfileRoute: ApiProfileRoute,

@@ -98,7 +98,7 @@ use the hyperdrive for cahing and better fetching,
 
 use the cloudflare vector for better vector database,
 
-bulid the proper landinga and marketing page for this,
+bulid the proper landinga and page for this,
 
 fix the deploymeent issue and the issue of inngest in the server
 

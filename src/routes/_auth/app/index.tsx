@@ -44,6 +44,7 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuShortcut,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
@@ -88,6 +89,17 @@ import {
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_auth/app/")({
+  /**
+   * Cloudflare Workers Free ≈ 10ms CPU per request. This screen is huge; SSR it
+   * reliably blows that budget (1102). Client-only here keeps the HTML shell
+   * from parent routes + API-driven data after hydration.
+   */
+  ssr: false,
+  pendingComponent: () => (
+    <div className="mx-auto flex w-full max-w-6xl justify-center px-4 pt-24 text-sm text-muted-foreground">
+      Loading marks…
+    </div>
+  ),
   component: AppIndex,
 });
 
@@ -207,6 +219,8 @@ function BookmarkRowInteractive({
   className,
   onButtonClick,
   onButtonKeyDown,
+  onMouseEnter,
+  onFocus,
   children,
 }: {
   useAnchor: boolean;
@@ -214,6 +228,8 @@ function BookmarkRowInteractive({
   className: string;
   onButtonClick: () => void;
   onButtonKeyDown: (event: React.KeyboardEvent<HTMLElement>) => void;
+  onMouseEnter?: React.MouseEventHandler<HTMLElement>;
+  onFocus?: React.FocusEventHandler<HTMLElement>;
   children: React.ReactNode;
 }) {
   const safeHref = href.trim();
@@ -224,6 +240,8 @@ function BookmarkRowInteractive({
         target="_blank"
         rel="noopener noreferrer"
         className={className}
+        onMouseEnter={onMouseEnter}
+        onFocus={onFocus}
         onKeyDown={(event) => {
           if (event.key === " ") {
             event.preventDefault();
@@ -237,7 +255,14 @@ function BookmarkRowInteractive({
   }
 
   return (
-    <button type="button" className={className} onClick={onButtonClick} onKeyDown={onButtonKeyDown}>
+    <button
+      type="button"
+      className={className}
+      onClick={onButtonClick}
+      onKeyDown={onButtonKeyDown}
+      onMouseEnter={onMouseEnter}
+      onFocus={onFocus}
+    >
       {children}
     </button>
   );
@@ -509,6 +534,24 @@ function getRedditSubredditFromUrl(urlValue: string) {
   } catch {
     return "";
   }
+}
+
+function isHackerNewsUrl(urlValue: string) {
+  try {
+    const host = new URL(urlValue).hostname.replace(/^www\./, "").toLowerCase();
+    return host === "news.ycombinator.com" || host === "hn.algolia.com";
+  } catch {
+    return false;
+  }
+}
+
+function toHackerNewsSubmitUrl(urlValue: string, title?: string | null) {
+  const params = new URLSearchParams({ u: urlValue });
+  const normalizedTitle = title?.trim();
+  if (normalizedTitle) {
+    params.set("t", normalizedTitle);
+  }
+  return `https://news.ycombinator.com/submitlink?${params.toString()}`;
 }
 
 interface AdvancedSearchQuery {
@@ -935,7 +978,7 @@ function MarksFolderPickerChip({
           )}
           {folder.isPinned ? "Pinned" : "Pin folder"}
         </ContextMenuItem>
-        {folder.sourceType !== "local" ? (
+        {folder.sourceType !== "local" && folder.sourceType !== "todo" ? (
           <ContextMenuItem
             disabled={syncFolderMutation.isPending}
             onClick={() => syncFolderMutation.mutate(folder.id)}
@@ -1100,6 +1143,7 @@ function AppIndex() {
     limit: ROW_PAGE_SIZE,
   });
   const [isSelectionMode, setIsSelectionMode] = React.useState(false);
+  const [isSelectionExportOpen, setIsSelectionExportOpen] = React.useState(false);
   const [selectedBookmarkIds, setSelectedBookmarkIds] = React.useState<string[]>([]);
   const [importFolderId, setImportFolderId] = React.useState<string | null>(null);
   const loadMoreRef = React.useRef<HTMLLIElement | null>(null);
@@ -1475,6 +1519,98 @@ function AppIndex() {
         queryClient.invalidateQueries({ queryKey: bookmarksQueryKey }),
         queryClient.invalidateQueries({ queryKey: ["bookmarks", "search"] }),
       ]);
+    },
+  });
+
+  const bulkUpdateBookmarkFlagsMutation = useMutation({
+    mutationFn: async (payload: {
+      ids: string[];
+      changes: {
+        saveForLater?: boolean;
+        isImportant?: boolean;
+        visibility?: "private" | "public";
+      };
+      successMessage: string;
+    }) => {
+      const uniqueIds = [...new Set(payload.ids)];
+      if (uniqueIds.length === 0) {
+        return { updatedCount: 0, successMessage: payload.successMessage };
+      }
+      await Promise.all(
+        uniqueIds.map(async (id) => {
+          const response = await fetch("/api/bookmarks", {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ id, action: "update-flags", ...payload.changes }),
+          });
+          if (!response.ok) {
+            const errorBody = (await response.json().catch(() => null)) as {
+              error?: string;
+            } | null;
+            throw new Error(
+              response.status === 401
+                ? "Please sign in."
+                : errorBody?.error || "Could not update selected bookmarks.",
+            );
+          }
+        }),
+      );
+      return { updatedCount: uniqueIds.length, successMessage: payload.successMessage };
+    },
+    onMutate: async (payload) => {
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: bookmarksQueryKey }),
+        queryClient.cancelQueries({ queryKey: ["bookmarks", "search"] }),
+      ]);
+      const targetIds = new Set(payload.ids);
+      const previousBookmarkLists = queryClient.getQueriesData<BookmarkRecord[]>({
+        queryKey: [...bookmarksQueryKey, "list"],
+      });
+      const previousSearches = queryClient.getQueriesData<BookmarkRecord[]>({
+        queryKey: ["bookmarks", "search"],
+      });
+      const applyChanges = (rows: BookmarkRecord[] | undefined) =>
+        rows?.map((row) =>
+          targetIds.has(row.id)
+            ? {
+                ...row,
+                saveForLater:
+                  typeof payload.changes.saveForLater === "boolean"
+                    ? payload.changes.saveForLater
+                    : row.saveForLater,
+                isImportant:
+                  typeof payload.changes.isImportant === "boolean"
+                    ? payload.changes.isImportant
+                    : row.isImportant,
+                visibility: payload.changes.visibility ?? row.visibility,
+              }
+            : row,
+        );
+      queryClient.setQueriesData({ queryKey: [...bookmarksQueryKey, "list"] }, applyChanges);
+      previousSearches.forEach(([queryKey]) => {
+        queryClient.setQueryData(queryKey, applyChanges);
+      });
+      return { previousBookmarkLists, previousSearches };
+    },
+    onSuccess: (result) => {
+      toast.success(
+        result.updatedCount > 0
+          ? `${result.successMessage} (${result.updatedCount})`
+          : "No bookmarks updated.",
+      );
+    },
+    onError: (error, _payload, context) => {
+      context?.previousBookmarkLists.forEach(([queryKey, rows]) => {
+        queryClient.setQueryData(queryKey, rows);
+      });
+      context?.previousSearches.forEach(([queryKey, rows]) => {
+        queryClient.setQueryData(queryKey, rows);
+      });
+      const message =
+        error instanceof Error ? error.message : "Could not update selected bookmarks.";
+      toast.error(message);
     },
   });
 
@@ -2491,9 +2627,32 @@ function AppIndex() {
     () => new Set(selectedBookmarkIds),
     [selectedBookmarkIds],
   );
-  const selectedVisibleCount = visibleRows.filter((row) =>
-    selectedBookmarkIdSet.has(row.id),
-  ).length;
+  const selectedVisibleRows = visibleRows.filter((row) => selectedBookmarkIdSet.has(row.id));
+  function exportSelectedBookmarks(format: "json" | "csv") {
+    const selectedRows = selectedVisibleRows;
+    if (selectedRows.length === 0) {
+      toast.error("Select at least one bookmark to export.");
+      return;
+    }
+    if (format === "json") {
+      downloadBookmarks(
+        `selected-bookmarks-${selectedRows.length}.json`,
+        JSON.stringify(selectedRows, null, 2),
+        "application/json;charset=utf-8",
+      );
+    } else {
+      downloadBookmarks(
+        `selected-bookmarks-${selectedRows.length}.csv`,
+        toBookmarksCsv(selectedRows),
+        "text/csv;charset=utf-8",
+      );
+    }
+    toast.success(
+      `Exported ${selectedRows.length} selected bookmark${selectedRows.length === 1 ? "" : "s"}.`,
+    );
+    setIsSelectionExportOpen(false);
+  }
+  const selectedVisibleCount = selectedVisibleRows.length;
   const allVisibleSelected = visibleRows.length > 0 && selectedVisibleCount === visibleRows.length;
   const xRows = (xBookmarksQuery.data?.bookmarks ?? []).filter((row) => {
     if (!isXFolderSelected || !normalizedSearchLower) {
@@ -2542,6 +2701,7 @@ function AppIndex() {
     useWindowVirtualRange(displayedRowCount, rowPaginationScope);
   const virtualDisplayedXRows = displayedXRows.slice(virtualStart, virtualEnd);
   const virtualDisplayedVisibleRows = displayedVisibleRows.slice(virtualStart, virtualEnd);
+  const [hoveredBookmarkId, setHoveredBookmarkId] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     const target = loadMoreRef.current;
@@ -2577,6 +2737,21 @@ function AppIndex() {
     bookmarkInputRef.current?.select();
   }, []);
 
+  const hoveredBookmark = hoveredBookmarkId
+    ? (visibleRows.find((row) => row.id === hoveredBookmarkId) ?? null)
+    : null;
+
+  const isInputLikeActiveElement = React.useCallback(() => {
+    const activeElement = document.activeElement;
+    const tagName = activeElement?.tagName.toLowerCase();
+    return (
+      tagName === "input" ||
+      tagName === "textarea" ||
+      tagName === "select" ||
+      (activeElement instanceof HTMLElement && activeElement.isContentEditable)
+    );
+  }, []);
+
   useHotkey("/", () => {
     focusBookmarkInput();
   });
@@ -2584,16 +2759,84 @@ function AppIndex() {
     focusBookmarkInput();
   });
   useHotkey("Enter", () => {
-    const activeElement = document.activeElement;
-    const tagName = activeElement?.tagName.toLowerCase();
-    const isInputLike =
-      tagName === "input" ||
-      tagName === "textarea" ||
-      tagName === "select" ||
-      (activeElement instanceof HTMLElement && activeElement.isContentEditable);
-    if (!isInputLike) {
+    if (!isInputLikeActiveElement()) {
       focusBookmarkInput();
     }
+  });
+
+  useHotkey({ key: "m" }, () => {
+    if (
+      isInputLikeActiveElement() ||
+      !hoveredBookmark ||
+      isTodoFolderName(hoveredBookmark.folderName)
+    ) {
+      return;
+    }
+    updateBookmarkFlagsMutation.mutate({
+      id: hoveredBookmark.id,
+      isImportant: !hoveredBookmark.isImportant,
+    });
+  });
+
+  useHotkey({ key: "l" }, () => {
+    if (
+      isInputLikeActiveElement() ||
+      !hoveredBookmark ||
+      isTodoFolderName(hoveredBookmark.folderName)
+    ) {
+      return;
+    }
+    updateBookmarkFlagsMutation.mutate({
+      id: hoveredBookmark.id,
+      saveForLater: !hoveredBookmark.saveForLater,
+    });
+  });
+
+  useHotkey({ key: "p" }, () => {
+    if (
+      isInputLikeActiveElement() ||
+      !hoveredBookmark ||
+      isTodoFolderName(hoveredBookmark.folderName)
+    ) {
+      return;
+    }
+    updateBookmarkFlagsMutation.mutate({
+      id: hoveredBookmark.id,
+      visibility: hoveredBookmark.visibility === "public" ? "private" : "public",
+    });
+  });
+
+  useHotkey({ key: "s" }, () => {
+    if (isInputLikeActiveElement() || !hoveredBookmark) {
+      return;
+    }
+    setIsSelectionMode(true);
+    setSelectedBookmarkIds((current) => {
+      if (current.includes(hoveredBookmark.id)) {
+        return current;
+      }
+      return [...current, hoveredBookmark.id];
+    });
+  });
+
+  useHotkey({ key: "c" }, () => {
+    if (isInputLikeActiveElement() || !hoveredBookmark) {
+      return;
+    }
+    void copyBookmarkUrl(hoveredBookmark.url);
+  });
+
+  useHotkey({ key: "r" }, () => {
+    if (isInputLikeActiveElement() || !hoveredBookmark) {
+      return;
+    }
+    setRenamingBookmark(hoveredBookmark);
+    setBookmarkTitleValue(
+      hoveredBookmark.title ||
+        (hoveredBookmark.contentType === "link"
+          ? getDisplayLabelFromUrl(hoveredBookmark.url)
+          : hoveredBookmark.url),
+    );
   });
 
   useHotkey("Mod+,", () => {
@@ -2639,9 +2882,30 @@ function AppIndex() {
     }
   }, []);
 
+  const copyManyBookmarkUrls = React.useCallback(async (urls: string[]) => {
+    const lines = urls.map((url) => url.trim()).filter(Boolean);
+    if (lines.length === 0) {
+      toast.error("Select at least one bookmark with a URL.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      toast.success(`Copied ${lines.length} URL${lines.length === 1 ? "" : "s"}.`);
+    } catch {
+      toast.error("Could not copy selected URLs.");
+    }
+  }, []);
+
   const openExternalUrl = React.useCallback((url: string) => {
     window.open(url, "_blank", "noopener,noreferrer");
   }, []);
+
+  const submitToHackerNews = React.useCallback(
+    (url: string, title?: string | null) => {
+      openExternalUrl(toHackerNewsSubmitUrl(url, title));
+    },
+    [openExternalUrl],
+  );
 
   const activateBookmarkRow = React.useCallback(
     (item: BookmarkRecord) => {
@@ -3036,7 +3300,14 @@ function AppIndex() {
               <DialogTitle>Add RSS live folder</DialogTitle>
               <DialogDescription>
                 Paste an RSS or Atom feed URL. The folder name is read from the feed channel and new
-                items sync automatically.
+                items sync automatically. For suggested sources, open the{" "}
+                <Link
+                  to="/app/feeds"
+                  className="font-medium text-foreground underline underline-offset-2"
+                >
+                  Feeds
+                </Link>{" "}
+                page.
               </DialogDescription>
             </DialogHeader>
             <form className="grid gap-4" onSubmit={submitRssFolder}>
@@ -3497,7 +3768,12 @@ function AppIndex() {
           <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
             <button
               type="button"
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+              className={cn(
+                "inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs transition-colors",
+                allVisibleSelected
+                  ? "border-primary/35 bg-primary/10 text-foreground"
+                  : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground",
+              )}
               onClick={() => {
                 if (allVisibleSelected) {
                   setSelectedBookmarkIds([]);
@@ -3511,10 +3787,116 @@ function AppIndex() {
               {allVisibleSelected ? "Clear selection" : "Select all"}
             </button>
             <span className="text-muted-foreground">{selectedVisibleCount} selected in view</span>
+            <DropdownMenu open={isSelectionExportOpen} onOpenChange={setIsSelectionExportOpen}>
+              <DropdownMenuTrigger
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                onMouseEnter={() => setIsSelectionExportOpen(true)}
+              >
+                <DownloadIcon className="size-3.5" />
+                Export
+                <ChevronDownIcon className="size-3.5" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                className="w-44"
+                onMouseLeave={() => setIsSelectionExportOpen(false)}
+              >
+                <DropdownMenuItem
+                  disabled={selectedBookmarkIds.length === 0}
+                  onClick={() => exportSelectedBookmarks("json")}
+                >
+                  <FileTextIcon className="size-4" />
+                  Export JSON
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={selectedBookmarkIds.length === 0}
+                  onClick={() => exportSelectedBookmarks("csv")}
+                >
+                  <DownloadIcon className="size-4" />
+                  Export CSV
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <button
               type="button"
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2.5 text-destructive hover:bg-destructive/10 disabled:opacity-50"
-              disabled={selectedBookmarkIds.length === 0 || deleteBookmarksBulkMutation.isPending}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+              disabled={selectedVisibleRows.length === 0}
+              onClick={() => void copyManyBookmarkUrls(selectedVisibleRows.map((row) => row.url))}
+            >
+              <ClipboardIcon className="size-3.5" />
+              Copy URLs
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+              disabled={
+                selectedVisibleRows.length === 0 || bulkUpdateBookmarkFlagsMutation.isPending
+              }
+              onClick={() =>
+                bulkUpdateBookmarkFlagsMutation.mutate({
+                  ids: selectedVisibleRows.map((row) => row.id),
+                  changes: {
+                    isImportant: !selectedVisibleRows.every((row) => row.isImportant),
+                  },
+                  successMessage: selectedVisibleRows.every((row) => row.isImportant)
+                    ? "Unmarked important"
+                    : "Marked important",
+                })
+              }
+            >
+              <FlagIcon className="size-3.5" />
+              {selectedVisibleRows.every((row) => row.isImportant) ? "Unimportant" : "Important"}
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+              disabled={
+                selectedVisibleRows.length === 0 || bulkUpdateBookmarkFlagsMutation.isPending
+              }
+              onClick={() =>
+                bulkUpdateBookmarkFlagsMutation.mutate({
+                  ids: selectedVisibleRows.map((row) => row.id),
+                  changes: {
+                    saveForLater: !selectedVisibleRows.every((row) => row.saveForLater),
+                  },
+                  successMessage: selectedVisibleRows.every((row) => row.saveForLater)
+                    ? "Removed from later"
+                    : "Saved for later",
+                })
+              }
+            >
+              <Clock3Icon className="size-3.5" />
+              {selectedVisibleRows.every((row) => row.saveForLater) ? "Remove later" : "Later"}
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+              disabled={
+                selectedVisibleRows.length === 0 || bulkUpdateBookmarkFlagsMutation.isPending
+              }
+              onClick={() =>
+                bulkUpdateBookmarkFlagsMutation.mutate({
+                  ids: selectedVisibleRows.map((row) => row.id),
+                  changes: {
+                    visibility: selectedVisibleRows.every((row) => row.visibility === "public")
+                      ? "private"
+                      : "public",
+                  },
+                  successMessage: selectedVisibleRows.every((row) => row.visibility === "public")
+                    ? "Marked private"
+                    : "Marked public",
+                })
+              }
+            >
+              <GlobeIcon className="size-3.5" />
+              {selectedVisibleRows.every((row) => row.visibility === "public")
+                ? "Private"
+                : "Public"}
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-destructive/35 bg-background px-2.5 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+              disabled={selectedVisibleRows.length === 0 || deleteBookmarksBulkMutation.isPending}
               onClick={() => deleteBookmarksBulkMutation.mutate(selectedBookmarkIds)}
             >
               {deleteBookmarksBulkMutation.isPending ? (
@@ -3526,7 +3908,7 @@ function AppIndex() {
             </button>
             <button
               type="button"
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
               onClick={() => {
                 setIsSelectionMode(false);
                 setSelectedBookmarkIds([]);
@@ -3597,7 +3979,11 @@ function AppIndex() {
               return (
                 <li key={item.id} className="py-1">
                   <ContextMenu>
-                    <ContextMenuTrigger className="block w-full rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
+                    <ContextMenuTrigger
+                      className="block w-full rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+                      onMouseEnter={() => setHoveredBookmarkId(item.id)}
+                      onFocus={() => setHoveredBookmarkId(item.id)}
+                    >
                       <BookmarkRowInteractive
                         useAnchor={useXAnchorRow}
                         href={item.url}
@@ -3664,6 +4050,7 @@ function AppIndex() {
             virtualDisplayedVisibleRows.map((item) => {
               const isTodoBookmark = isTodoFolderName(item.folderName);
               const isLink = item.contentType === "link";
+              const canSubmitToHackerNews = isLink && !isHackerNewsUrl(item.url);
               const host = isLink ? getHostFromUrl(item.url) : "";
               const redditSubreddit = isLink ? getRedditSubredditFromUrl(item.url) : "";
               const displayTitle =
@@ -3698,7 +4085,18 @@ function AppIndex() {
                         useAnchor={useAnchorRow}
                         href={item.url}
                         className={bookmarkRowInteractiveClass}
+                        onMouseEnter={() => setHoveredBookmarkId(item.id)}
+                        onFocus={() => setHoveredBookmarkId(item.id)}
                         onButtonClick={() => {
+                          if (isSelectionMode) {
+                            setSelectedBookmarkIds((current) => {
+                              if (current.includes(item.id)) {
+                                return current.filter((id) => id !== item.id);
+                              }
+                              return [...current, item.id];
+                            });
+                            return;
+                          }
                           if (isTodoFolderSelected) {
                             updateBookmarkFlagsMutation.mutate({
                               id: item.id,
@@ -3710,6 +4108,15 @@ function AppIndex() {
                         }}
                         onButtonKeyDown={(event) =>
                           handleRowKeyDown(event, () => {
+                            if (isSelectionMode) {
+                              setSelectedBookmarkIds((current) => {
+                                if (current.includes(item.id)) {
+                                  return current.filter((id) => id !== item.id);
+                                }
+                                return [...current, item.id];
+                              });
+                              return;
+                            }
                             if (isTodoFolderSelected) {
                               updateBookmarkFlagsMutation.mutate({
                                 id: item.id,
@@ -3875,32 +4282,49 @@ function AppIndex() {
                         <CreatedAtCell iso={item.createdAt} inheritLinkTint={useAnchorRow} />
                       </BookmarkRowInteractive>
                     </ContextMenuTrigger>
-                    <ContextMenuContent className="min-w-52">
+                    <ContextMenuContent className="min-w-60 rounded-2xl border-border/60 p-1">
                       {!isTodoBookmark ? (
-                        <ContextMenuItem onClick={() => void copyBookmarkUrl(item.url)}>
+                        <ContextMenuItem
+                          className="py-2"
+                          onClick={() => void copyBookmarkUrl(item.url)}
+                        >
                           <ClipboardIcon />
-                          {isLink ? "Copy URL" : "Copy Text"}
+                          {isLink ? "Copy" : "Copy text"}
+                          <ContextMenuShortcut>C</ContextMenuShortcut>
                         </ContextMenuItem>
                       ) : null}
                       <ContextMenuItem
+                        className="py-2"
                         onClick={() => {
                           setRenamingBookmark(item);
                           setBookmarkTitleValue(displayTitle);
                         }}
                       >
                         <PencilIcon />
-                        Rename title
+                        Rename
+                        <ContextMenuShortcut>R</ContextMenuShortcut>
                       </ContextMenuItem>
                       {isLink ? (
                         <ContextMenuItem
+                          className="py-2"
                           onClick={() => window.open(item.url, "_blank", "noopener,noreferrer")}
                         >
                           <ExternalLinkIcon />
                           Open Link
                         </ContextMenuItem>
                       ) : null}
+                      {canSubmitToHackerNews ? (
+                        <ContextMenuItem
+                          className="py-2"
+                          onClick={() => submitToHackerNews(item.url, item.title ?? displayTitle)}
+                        >
+                          <UploadIcon />
+                          Submit to Hacker News
+                        </ContextMenuItem>
+                      ) : null}
                       {isLink ? (
                         <ContextMenuItem
+                          className="py-2"
                           disabled={refetchBookmarkMetadataMutation.isPending}
                           onClick={() => refetchBookmarkMetadataMutation.mutate(item.id)}
                         >
@@ -3912,11 +4336,12 @@ function AppIndex() {
                           Refetch metadata
                         </ContextMenuItem>
                       ) : null}
-                      <ContextMenuItem disabled>
+                      <ContextMenuItem className="py-2" disabled>
                         <SparklesIcon />
                         Embedding: {formatEmbeddingStatus(item.embeddingStatus)}
                       </ContextMenuItem>
                       <ContextMenuItem
+                        className="py-2"
                         disabled={
                           requestBookmarkEmbeddingMutation.isPending &&
                           requestBookmarkEmbeddingMutation.variables?.id === item.id
@@ -3938,6 +4363,7 @@ function AppIndex() {
                       </ContextMenuItem>
                       <ContextMenuSeparator />
                       <ContextMenuItem
+                        className="py-2"
                         disabled={!isTodoFolderSelected}
                         onClick={() =>
                           updateBookmarkFlagsMutation.mutate({
@@ -3950,6 +4376,7 @@ function AppIndex() {
                         {item.isCompleted ? "Mark as not done" : "Mark as done"}
                       </ContextMenuItem>
                       <ContextMenuItem
+                        className="py-2"
                         onClick={() =>
                           updateBookmarkFlagsMutation.mutate({
                             id: item.id,
@@ -3961,6 +4388,7 @@ function AppIndex() {
                         {item.saveForLater ? "Remove from save later" : "Save for later"}
                       </ContextMenuItem>
                       <ContextMenuItem
+                        className="py-2"
                         onClick={() =>
                           updateBookmarkFlagsMutation.mutate({
                             id: item.id,
@@ -3972,6 +4400,7 @@ function AppIndex() {
                         {item.isImportant ? "Unmark important" : "Mark as important"}
                       </ContextMenuItem>
                       <ContextMenuItem
+                        className="py-2"
                         onClick={() =>
                           updateBookmarkFlagsMutation.mutate({
                             id: item.id,
@@ -3984,6 +4413,7 @@ function AppIndex() {
                       </ContextMenuItem>
                       <ContextMenuSeparator />
                       <ContextMenuItem
+                        className="py-2"
                         onClick={() => {
                           setIsSelectionMode(true);
                           setSelectedBookmarkIds((current) => {
@@ -3996,8 +4426,10 @@ function AppIndex() {
                       >
                         <CheckSquareIcon />
                         Select
+                        <ContextMenuShortcut>S</ContextMenuShortcut>
                       </ContextMenuItem>
                       <ContextMenuItem
+                        className="py-2"
                         variant="destructive"
                         disabled={deleteBookmarkMutation.isPending}
                         onClick={() => deleteBookmarkMutation.mutate(item.id)}
@@ -4008,6 +4440,7 @@ function AppIndex() {
                           <Trash2Icon />
                         )}
                         Delete
+                        <ContextMenuShortcut>⌘⌫</ContextMenuShortcut>
                       </ContextMenuItem>
                     </ContextMenuContent>
                   </ContextMenu>

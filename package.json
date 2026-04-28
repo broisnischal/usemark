@@ -15,6 +15,7 @@
     "check": "bun run format && bun run lint",
     "prepare": "husky",
     "db": "drizzle-kit",
+    "localstudio": "bun run scripts/local-drizzle-studio.ts",
     "deps": "bunx taze@latest -Ilw",
     "deps:major": "bunx taze@latest major -Ilw",
     "tanstack": "bunx @tanstack/cli@latest",
