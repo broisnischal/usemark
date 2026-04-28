@@ -1748,6 +1748,19 @@ export async function listDueRssBookmarkFolderIds() {
     .map((row) => row.id);
 }
 
+export async function listActiveRssBookmarkFolderIds(limit: number = 100) {
+  const normalizedLimit =
+    Number.isFinite(limit) && limit > 0 ? Math.max(1, Math.min(500, Math.floor(limit))) : 100;
+  const rows = await db
+    .select({ id: bookmarkFolder.id })
+    .from(bookmarkFolder)
+    .where(and(eq(bookmarkFolder.sourceType, "rss"), eq(bookmarkFolder.syncEnabled, true)))
+    .orderBy(bookmarkFolder.lastSyncedAt)
+    .limit(normalizedLimit);
+
+  return rows.map((row) => row.id);
+}
+
 export async function processBookmarkEmbedding(
   bookmarkId: string,
   options: { force?: boolean; refreshTitle?: boolean } = {},

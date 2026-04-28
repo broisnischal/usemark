@@ -4,8 +4,9 @@ import { NonRetriableError } from "inngest";
 import {
   bookmarkFolderExistsForUser,
   createBookmarksBatchForUser,
+  listActiveRssBookmarkFolderIds,
   listDueRssBookmarkFolderIds,
-  pruneRssBookmarksForDueFolders,
+  pruneRssBookmarksForFolder,
   processBookmarkEmbedding,
   syncRssBookmarkFolder,
 } from "@/lib/bookmarks/functions";
@@ -14,6 +15,8 @@ import { inngest } from "./client";
 
 const RSS_INITIAL_INSERT_LIMIT = 25;
 const IMPORT_BACKGROUND_CHUNK_SIZE = 50;
+const RSS_SCHEDULED_QUEUE_LIMIT = 75;
+const RSS_CLEANUP_QUEUE_LIMIT = 75;
 
 async function queueBookmarkEmbeddingEvents(bookmarkIds: string[]) {
   if (bookmarkIds.length === 0) {
@@ -206,38 +209,20 @@ export const rssFolderScheduledSync = inngest.createFunction(
       return listDueRssBookmarkFolderIds();
     });
 
-    await Promise.all(
-      folderIds.map(async (folderId) => {
-        const result = await step.run(`sync-rss-folder-${folderId}`, async () => {
-          return syncRssBookmarkFolder(folderId, {
-            immediateInsertLimit: RSS_INITIAL_INSERT_LIMIT,
-          });
-        });
+    const dueFolderIds = folderIds.slice(0, RSS_SCHEDULED_QUEUE_LIMIT);
+    if (dueFolderIds.length === 0) {
+      return;
+    }
 
-        await step.run(`queue-rss-bookmark-embeddings-${folderId}`, async () => {
-          await queueBookmarkEmbeddingEvents(
-            result.bookmarkIds.filter((bookmarkId): bookmarkId is string => Boolean(bookmarkId)),
-          );
-        });
-
-        if (result.userId && result.deferredItems.length > 0) {
-          await step.run(`queue-rss-deferred-import-${folderId}`, async () => {
-            await inngest.send({
-              id: `bookmark-import-rss-scheduled-${folderId}-${Date.now()}`,
-              name: "bookmark/import.requested",
-              data: {
-                userId: result.userId,
-                sourceFolderId: folderId,
-                items: result.deferredItems.map((item) => ({
-                  ...item,
-                  createdAt: typeof item.createdAt === "string" ? item.createdAt : undefined,
-                })),
-              },
-            });
-          });
-        }
-      }),
-    );
+    await step.run("queue-rss-sync-events", async () => {
+      await inngest.send(
+        dueFolderIds.map((folderId) => ({
+          id: `bookmark-folder-rss-sync-scheduled-${folderId}-${Date.now()}`,
+          name: "bookmark-folder/rss.sync.requested",
+          data: { folderId },
+        })),
+      );
+    });
   },
 );
 
@@ -248,8 +233,45 @@ export const rssBookmarkCleanupScheduled = inngest.createFunction(
     triggers: { cron: "0 */6 * * *" },
   },
   async ({ step }) => {
-    await step.run("prune-rss-bookmarks", async () => {
-      return pruneRssBookmarksForDueFolders();
+    const folderIds = await step.run("list-rss-folders-for-cleanup", async () => {
+      return listActiveRssBookmarkFolderIds(RSS_CLEANUP_QUEUE_LIMIT);
+    });
+    if (folderIds.length === 0) {
+      return;
+    }
+
+    await step.run("queue-rss-cleanup-events", async () => {
+      await inngest.send(
+        folderIds.map((folderId) => ({
+          id: `bookmark-folder-rss-cleanup-${folderId}-${Date.now()}`,
+          name: "bookmark-folder/rss.cleanup.requested",
+          data: { folderId },
+        })),
+      );
+    });
+  },
+);
+
+export const rssBookmarkCleanupRequested = inngest.createFunction(
+  {
+    id: "rss-bookmark-cleanup-requested",
+    retries: 2,
+    triggers: { event: "bookmark-folder/rss.cleanup.requested" },
+  },
+  async ({ event, step }) => {
+    const folderId =
+      (event.data as { folderId?: string } | undefined)?.folderId ??
+      (event.data as { data?: { folderId?: string } } | undefined)?.data?.folderId ??
+      undefined;
+
+    if (!folderId) {
+      throw new NonRetriableError(
+        "Missing folderId in bookmark-folder/rss.cleanup.requested event payload.",
+      );
+    }
+
+    await step.run("prune-rss-folder", async () => {
+      return pruneRssBookmarksForFolder(folderId);
     });
   },
 );
@@ -260,4 +282,5 @@ export const inngestFunctions = [
   rssFolderSyncRequested,
   rssFolderScheduledSync,
   rssBookmarkCleanupScheduled,
+  rssBookmarkCleanupRequested,
 ];
