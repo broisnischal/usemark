@@ -1,4 +1,4 @@
-import { SiGithub, SiReddit, SiX } from "@icons-pack/react-simple-icons";
+import { SiGithub, SiGoogle, SiReddit, SiX } from "@icons-pack/react-simple-icons";
 import { useHotkey } from "@tanstack/react-hotkeys";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
@@ -29,6 +29,7 @@ import {
   SearchIcon,
   SlidersHorizontalIcon,
   SparklesIcon,
+  StarIcon,
   Trash2Icon,
   UploadIcon,
   XIcon,
@@ -39,12 +40,16 @@ import { toast } from "sonner";
 
 import { HoldToDelete } from "@/components/hold-to-delete";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuShortcut,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
@@ -83,9 +88,16 @@ import {
   bookmarksQueryOptions,
   githubReposQueryKey,
   githubReposQueryOptions,
+  githubStarsQueryOptions,
   xBookmarksQueryKey,
   xBookmarksQueryOptions,
 } from "@/lib/bookmarks/queries";
+import {
+  isClipboardAutoPasteEnabled,
+  isMarksFolderStripVisible,
+  MARKS_FOLDER_STRIP_VISIBILITY_EVENT,
+  setMarksFolderStripVisible,
+} from "@/lib/client-preferences";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_auth/app/")({
@@ -95,22 +107,100 @@ export const Route = createFileRoute("/_auth/app/")({
    * from parent routes + API-driven data after hydration.
    */
   ssr: false,
-  pendingComponent: () => (
-    <div className="mx-auto flex w-full max-w-6xl justify-center px-4 pt-24 text-sm text-muted-foreground">
-      Loading marks…
-    </div>
-  ),
+  pendingComponent: PendingMarksSkeleton,
   component: AppIndex,
 });
+
+function PendingMarksSkeleton() {
+  const [showFolderStrip, setShowFolderStrip] = React.useState(getInitialFolderStripVisibility);
+
+  React.useEffect(() => {
+    const syncFolderStripVisibility = () => {
+      setShowFolderStrip(isMarksFolderStripVisible());
+    };
+
+    window.addEventListener(MARKS_FOLDER_STRIP_VISIBILITY_EVENT, syncFolderStripVisibility);
+    window.addEventListener("storage", syncFolderStripVisibility);
+
+    return () => {
+      window.removeEventListener(MARKS_FOLDER_STRIP_VISIBILITY_EVENT, syncFolderStripVisibility);
+      window.removeEventListener("storage", syncFolderStripVisibility);
+    };
+  }, []);
+
+  return (
+    <main className="mx-auto w-full max-w-6xl px-4 pt-6 pb-12">
+      <div className="mx-auto w-full">
+        <div className="mb-5">
+          <div className="frappe-shimmer h-11 rounded-lg border bg-muted/35 shadow-sm shadow-foreground/5" />
+        </div>
+
+        {showFolderStrip ? (
+          <div className="my-4 flex flex-wrap items-center gap-2">
+            {Array.from({ length: 4 }).map((_, index) => (
+              <div
+                key={`pending-folder-skeleton-${index}`}
+                className="frappe-shimmer h-9 w-28 shrink-0 rounded-lg bg-muted/30"
+              />
+            ))}
+            <div className="frappe-shimmer h-8 w-24 shrink-0 rounded-lg bg-muted/30" />
+          </div>
+        ) : null}
+
+        <div className="grid grid-cols-[minmax(0,1fr)_10rem] border-b border-border/60 pb-2.5 text-sm text-muted-foreground">
+          <p>Marks</p>
+          <p
+            className="justify-self-end text-right text-sm font-medium text-foreground/80"
+            style={{ width: CREATED_AT_COL_W }}
+          >
+            Created
+          </p>
+        </div>
+
+        <ul className="divide-y divide-border/60">
+          {Array.from({ length: 6 }).map((_, index) => (
+            <li
+              key={`pending-row-skeleton-${index}`}
+              className="grid grid-cols-[minmax(0,1fr)_10rem] items-start gap-3 py-3"
+            >
+              <div className="flex min-w-0 items-start gap-2.5">
+                <div className="frappe-shimmer mt-0.5 size-4 shrink-0 rounded-sm bg-muted/65" />
+                <div className="min-w-0 flex-1">
+                  <div className="frappe-shimmer h-4 w-3/5 rounded-md bg-muted/65" />
+                  <div className="mt-1.5 flex items-center gap-1.5">
+                    <div className="frappe-shimmer h-3 w-24 rounded-md bg-muted/55" />
+                  </div>
+                </div>
+              </div>
+              <div className="self-center justify-self-end" style={{ width: CREATED_AT_COL_W }}>
+                <div className="frappe-shimmer h-3.5 w-full rounded-md bg-muted/55" />
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </main>
+  );
+}
 
 const BOOKMARK_INPUT_DEBOUNCE_MS = 300;
 const ROW_PAGE_SIZE = 40;
 const VIRTUAL_ROW_ESTIMATE_PX = 45;
 const VIRTUAL_ROW_OVERSCAN = 10;
 const SEARCH_STATE_STORAGE_KEY = "usemarks.search";
+const AUTO_PASTED_LINKS_STORAGE_KEY = "usemarks.auto-pasted-links";
+const AUTO_PASTED_LINKS_MAX = 200;
+const AUTO_PASTE_MAX_URL_LENGTH = 200;
+
+function getInitialFolderStripVisibility() {
+  if (typeof window === "undefined") {
+    return true;
+  }
+  return isMarksFolderStripVisible();
+}
 
 type BookmarkSearchMode = "semantic" | "fuzzy" | "exact";
-type GitHubResourceType = "all" | "issues" | "pulls" | "releases";
+type GitHubResourceType = "all" | "stars" | "pulls" | "releases";
 type ProfileConnectionAccount = {
   id: string;
   providerId: string;
@@ -294,6 +384,43 @@ function readStoredSearchState() {
   }
 }
 
+function readAutoPastedLinks() {
+  if (typeof window === "undefined") {
+    return new Set<string>();
+  }
+
+  try {
+    const raw = window.localStorage.getItem(AUTO_PASTED_LINKS_STORAGE_KEY);
+    if (!raw) {
+      return new Set<string>();
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return new Set<string>();
+    }
+    return new Set(parsed.filter((value): value is string => typeof value === "string"));
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function markLinkAsAutoPasted(url: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    const existing = [...readAutoPastedLinks()];
+    const deduped = [url, ...existing.filter((item) => item !== url)].slice(
+      0,
+      AUTO_PASTED_LINKS_MAX,
+    );
+    window.localStorage.setItem(AUTO_PASTED_LINKS_STORAGE_KEY, JSON.stringify(deduped));
+  } catch {
+    // Ignore storage write failures.
+  }
+}
+
 function escapeCsvValue(value: string) {
   if (value.includes(",") || value.includes('"') || value.includes("\n")) {
     return `"${value.replaceAll('"', '""')}"`;
@@ -350,8 +477,8 @@ const LIVE_FOLDER_OPTIONS: Array<{
   },
   {
     sourceType: "github",
-    name: "GitHub Issues",
-    description: "Connect GitHub and follow assigned or saved issues.",
+    name: "GitHub",
+    description: "Connect GitHub integrations and views.",
   },
   {
     sourceType: "x",
@@ -407,8 +534,11 @@ function normalizeGitHubRepoInput(value: string) {
 
 function normalizeGitHubResourceTypeInput(value: string | undefined): GitHubResourceType {
   const normalized = value?.trim().toLowerCase();
+  if (normalized === "star" || normalized === "stars") {
+    return "stars";
+  }
   if (normalized === "issue" || normalized === "issues") {
-    return "issues";
+    return "all";
   }
   if (
     normalized === "pr" ||
@@ -731,6 +861,20 @@ function bookmarkMatchesAdvancedFilters(
   );
 }
 
+function hasAdvancedSearchFilters(filters: AdvancedSearchQuery["filters"]) {
+  return (
+    filters.host.length > 0 ||
+    filters.path.length > 0 ||
+    filters.folder.length > 0 ||
+    filters.tag.length > 0 ||
+    filters.type.length > 0 ||
+    filters.subreddit.length > 0 ||
+    filters.later !== null ||
+    filters.important !== null ||
+    filters.isPublic !== null
+  );
+}
+
 function bookmarkMatchesSearch(row: BookmarkRecord, query: string | AdvancedSearchQuery) {
   const advancedQuery = typeof query === "string" ? parseAdvancedSearchQuery(query) : query;
   if (!bookmarkMatchesAdvancedFilters(row, advancedQuery.filters)) {
@@ -911,6 +1055,10 @@ type MarksFolderPickerChipProps = {
   isActive: boolean;
   onSelect: () => void;
   onPrefetch: () => void;
+  renameFolderMutation: {
+    isPending: boolean;
+    mutate: (payload: { id: string; name: string }) => void;
+  };
   pinFolderMutation: { isPending: boolean; mutate: (id: string) => void };
   syncFolderMutation: { isPending: boolean; mutate: (id: string) => void };
   markFolderSeenMutation: { mutate: (id: string) => void };
@@ -927,6 +1075,7 @@ function MarksFolderPickerChip({
   isActive,
   onSelect,
   onPrefetch,
+  renameFolderMutation,
   pinFolderMutation,
   syncFolderMutation,
   markFolderSeenMutation,
@@ -937,11 +1086,80 @@ function MarksFolderPickerChip({
   onImport,
   onDelete,
 }: MarksFolderPickerChipProps) {
+  const canInlineRename =
+    (folder.sourceType === "local" ||
+      folder.sourceType === "todo" ||
+      folder.sourceType === "rss") &&
+    folder.name !== "default";
   const baseTitle =
     folder.sourceType === "local" || folder.sourceType === "todo"
       ? getFolderDisplayName(folder)
       : `${getFolderSourceLabel(folder.sourceType)} live folder`;
   const title = `${baseTitle} · Right-click for folder actions`;
+  const [isRenamingInline, setIsRenamingInline] = React.useState(false);
+  const [renameValue, setRenameValue] = React.useState(getFolderDisplayName(folder));
+  const baseRenameWidthCh = Math.max(8, getFolderDisplayName(folder).length + 1);
+  const renameWidthCh = Math.max(baseRenameWidthCh, renameValue.length + 1);
+
+  React.useEffect(() => {
+    if (!isRenamingInline) {
+      setRenameValue(getFolderDisplayName(folder));
+    }
+  }, [folder, isRenamingInline]);
+
+  const submitInlineRename = () => {
+    if (!canInlineRename || renameFolderMutation.isPending) {
+      return;
+    }
+    const nextName = renameValue.trim();
+    if (!nextName) {
+      setRenameValue(getFolderDisplayName(folder));
+      setIsRenamingInline(false);
+      return;
+    }
+    if (nextName === getFolderDisplayName(folder).trim()) {
+      setIsRenamingInline(false);
+      return;
+    }
+    renameFolderMutation.mutate({ id: folder.id, name: nextName });
+    setIsRenamingInline(false);
+  };
+
+  if (isRenamingInline) {
+    return (
+      <div
+        className={cn(
+          MARKS_FOLDER_CHIP_CLASS,
+          "max-w-none ring-2 ring-ring/30 outline-none",
+          isActive ? "bg-primary/10" : "bg-muted/20",
+        )}
+      >
+        <span className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground">
+          <FolderSourceIcon folder={folder} />
+        </span>
+        <Input
+          value={renameValue}
+          onChange={(event) => setRenameValue(event.target.value)}
+          onBlur={submitInlineRename}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              submitInlineRename();
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setRenameValue(getFolderDisplayName(folder));
+              setIsRenamingInline(false);
+            }
+          }}
+          autoFocus
+          className="h-7 min-w-0 rounded-md border-0 bg-background/70 px-2 text-sm shadow-none focus-visible:ring-1"
+          style={{ width: `${renameWidthCh}ch`, minWidth: `${baseRenameWidthCh}ch` }}
+        />
+      </div>
+    );
+  }
 
   return (
     <ContextMenu>
@@ -956,6 +1174,13 @@ function MarksFolderPickerChip({
             aria-pressed={isActive}
             title={title}
             onClick={onSelect}
+            onDoubleClick={() => {
+              if (!canInlineRename) {
+                return;
+              }
+              setRenameValue(getFolderDisplayName(folder));
+              setIsRenamingInline(true);
+            }}
             onFocus={onPrefetch}
             onMouseEnter={onPrefetch}
           />
@@ -1018,6 +1243,18 @@ function MarksFolderPickerChip({
           <CheckSquareIcon />
           Mark as seen
         </ContextMenuItem>
+        {canInlineRename ? (
+          <ContextMenuItem
+            disabled={renameFolderMutation.isPending}
+            onClick={() => {
+              setRenameValue(getFolderDisplayName(folder));
+              setIsRenamingInline(true);
+            }}
+          >
+            <PencilIcon />
+            Rename folder
+          </ContextMenuItem>
+        ) : null}
         {folder.sourceType === "local" ? (
           <>
             <ContextMenuSeparator />
@@ -1122,8 +1359,15 @@ function AppIndex() {
     "folder",
     parseAsString.withDefault("auto").withOptions({ history: "replace" }),
   );
+  const isGitHubStarsViewSelected = folderQueryValue === "github-stars";
   const selectedFolderId =
-    folderQueryValue === "auto" ? undefined : folderQueryValue === "all" ? null : folderQueryValue;
+    folderQueryValue === "auto"
+      ? undefined
+      : folderQueryValue === "all"
+        ? null
+        : isGitHubStarsViewSelected
+          ? undefined
+          : folderQueryValue;
   const setSelectedFolderId = React.useCallback(
     (nextFolderId: string | null | undefined) => {
       void setFolderQueryValue(
@@ -1142,6 +1386,7 @@ function AppIndex() {
   const [isHotkeysDialogOpen, setIsHotkeysDialogOpen] = React.useState(false);
   const [isRssSettingsDialogOpen, setIsRssSettingsDialogOpen] = React.useState(false);
   const [settingsFolderId, setSettingsFolderId] = React.useState<string | null>(null);
+  const [showFolderStrip, setShowFolderStrip] = React.useState(getInitialFolderStripVisibility);
   const [renamingBookmark, setRenamingBookmark] = React.useState<BookmarkRecord | null>(null);
   const [rssFeedUrl, setRssFeedUrl] = React.useState("");
   const [githubRepoValue, setGithubRepoValue] = React.useState("");
@@ -1165,10 +1410,124 @@ function AppIndex() {
   const importBookmarksInputRef = React.useRef<HTMLInputElement | null>(null);
   const debouncedInputValue = useDebouncedValue(inputValue, BOOKMARK_INPUT_DEBOUNCE_MS);
   const search = inputValue.trim() ? debouncedInputValue.trim() : "";
+  const inputValueRef = React.useRef(inputValue);
+  const hasShownClipboardPermissionHintRef = React.useRef(false);
+  const autoPastedLinksRef = React.useRef<Set<string>>(new Set());
 
   React.useEffect(() => {
     window.localStorage.setItem(SEARCH_STATE_STORAGE_KEY, JSON.stringify({ searchMode }));
   }, [searchMode]);
+
+  React.useEffect(() => {
+    inputValueRef.current = inputValue;
+  }, [inputValue]);
+
+  React.useEffect(() => {
+    autoPastedLinksRef.current = readAutoPastedLinks();
+  }, []);
+
+  React.useEffect(() => {
+    const syncFolderStripVisibility = () => {
+      setShowFolderStrip(isMarksFolderStripVisible());
+    };
+
+    window.addEventListener(MARKS_FOLDER_STRIP_VISIBILITY_EVENT, syncFolderStripVisibility);
+    window.addEventListener("storage", syncFolderStripVisibility);
+
+    return () => {
+      window.removeEventListener(MARKS_FOLDER_STRIP_VISIBILITY_EVENT, syncFolderStripVisibility);
+      window.removeEventListener("storage", syncFolderStripVisibility);
+    };
+  }, []);
+
+  const checkClipboardForAutoPaste = React.useCallback(async () => {
+    if (!isClipboardAutoPasteEnabled()) {
+      return;
+    }
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+      return;
+    }
+    if (typeof navigator === "undefined" || typeof navigator.clipboard?.readText !== "function") {
+      return;
+    }
+
+    try {
+      if (typeof navigator.permissions?.query === "function") {
+        const permissionStatus = await navigator.permissions.query({
+          name: "clipboard-read" as PermissionName,
+        });
+        if (permissionStatus.state === "denied") {
+          if (!hasShownClipboardPermissionHintRef.current) {
+            hasShownClipboardPermissionHintRef.current = true;
+            toast.error("Clipboard access is blocked. Allow clipboard permission for auto-paste.");
+          }
+          return;
+        }
+        if (permissionStatus.state === "prompt" && !hasShownClipboardPermissionHintRef.current) {
+          hasShownClipboardPermissionHintRef.current = true;
+          toast.info("Allow clipboard permission to enable auto-paste link.");
+        }
+      }
+
+      const rawClipboard = await navigator.clipboard.readText();
+      const clipboardText = rawClipboard.trim();
+      if (!clipboardText) {
+        return;
+      }
+
+      const normalizedClipboard = normalizeBookmarkContent(clipboardText);
+      if (normalizedClipboard.contentType !== "link") {
+        return;
+      }
+      if (normalizedClipboard.content.length > AUTO_PASTE_MAX_URL_LENGTH) {
+        return;
+      }
+      if (autoPastedLinksRef.current.has(normalizedClipboard.content)) {
+        return;
+      }
+      if (normalizedClipboard.content === inputValueRef.current.trim()) {
+        return;
+      }
+
+      autoPastedLinksRef.current.add(normalizedClipboard.content);
+      markLinkAsAutoPasted(normalizedClipboard.content);
+      await setInputValue(normalizedClipboard.content);
+      inputValueRef.current = normalizedClipboard.content;
+      bookmarkInputRef.current?.focus();
+      bookmarkInputRef.current?.select();
+    } catch {
+      if (!hasShownClipboardPermissionHintRef.current) {
+        hasShownClipboardPermissionHintRef.current = true;
+        toast.error(
+          "Could not read clipboard. Check browser clipboard permission, or turn off Auto-paste link from Profile.",
+        );
+      }
+    }
+  }, [setInputValue]);
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleWindowFocus = () => {
+      void checkClipboardForAutoPaste();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void checkClipboardForAutoPaste();
+      }
+    };
+
+    void checkClipboardForAutoPaste();
+    window.addEventListener("focus", handleWindowFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleWindowFocus);
+    };
+  }, [checkClipboardForAutoPaste]);
 
   const foldersQuery = useQuery(bookmarkFoldersQueryOptions());
   const folders = React.useMemo(
@@ -1186,27 +1545,53 @@ function AppIndex() {
       : selectedFolderId;
   const selectedFolder = folders.find((folder) => folder.id === activeFolderId) ?? null;
   const settingsFolder = folders.find((folder) => folder.id === settingsFolderId) ?? null;
+  const foldersById = React.useMemo(
+    () => new Map(folders.map((folder) => [folder.id, folder])),
+    [folders],
+  );
   const isXFolderSelected = selectedFolder?.sourceType === "x";
   const isGitHubFolderSelected = selectedFolder?.sourceType === "github";
   const isTodoFolderSelected = selectedFolder ? isTodoFolderRecord(selectedFolder) : false;
   const bookmarkPaginationScope = [activeFolderId ?? "all", searchMode, search].join(":");
+  const semanticSearchState = React.useMemo(() => {
+    const trimmedSearch = search.trim();
+    if (!trimmedSearch) {
+      return {
+        queryText: "",
+        hasAdvancedFilters: false,
+      };
+    }
+    const parsed = parseAdvancedSearchQuery(trimmedSearch);
+    return {
+      queryText: parsed.text || trimmedSearch,
+      hasAdvancedFilters: hasAdvancedSearchFilters(parsed.filters),
+    };
+  }, [search]);
   const bookmarkFetchLimit =
     rowPagination.scope === bookmarkPaginationScope
+      ? Math.max(ROW_PAGE_SIZE * 2, rowPagination.limit + ROW_PAGE_SIZE)
+      : ROW_PAGE_SIZE * 2;
+  const githubStarsPaginationScope = ["github-stars", searchMode, search].join(":");
+  const githubStarsFetchLimit =
+    rowPagination.scope === githubStarsPaginationScope
       ? Math.max(ROW_PAGE_SIZE * 2, rowPagination.limit + ROW_PAGE_SIZE)
       : ROW_PAGE_SIZE * 2;
   const bookmarksQuery = useQuery(
     bookmarksQueryOptions(
       activeFolderId,
-      Boolean(foldersQuery.data) && !isXFolderSelected,
+      Boolean(foldersQuery.data) && !isXFolderSelected && !isGitHubStarsViewSelected,
       bookmarkFetchLimit,
     ),
   );
   const searchQuery = useQuery({
-    ...bookmarkSearchQueryOptions(search),
-    enabled: searchMode === "semantic" && Boolean(search.trim()),
+    ...bookmarkSearchQueryOptions(semanticSearchState.queryText),
+    enabled: searchMode === "semantic" && Boolean(semanticSearchState.queryText),
     placeholderData: (previousData) => previousData,
   });
   const xBookmarksQuery = useQuery(xBookmarksQueryOptions(isXFolderSelected));
+  const githubStarsQuery = useQuery(
+    githubStarsQueryOptions(isGitHubStarsViewSelected, githubStarsFetchLimit),
+  );
   const githubConnectionQuery = useQuery({
     queryKey: ["profile", "github-connection"] as const,
     enabled: isGitHubFolderDialogOpen,
@@ -1224,6 +1609,28 @@ function AppIndex() {
       return (await response.json()) as ProfileConnectionResponse;
     },
   });
+  const integrationConnectionQuery = useQuery({
+    queryKey: ["profile", "connections-lite"] as const,
+    staleTime: 15_000,
+    queryFn: async ({ signal }) => {
+      const response = await fetch("/api/profile", {
+        method: "GET",
+        signal,
+      });
+      if (!response.ok) {
+        throw new Error(
+          response.status === 401 ? "Please sign in." : "Could not load integration status.",
+        );
+      }
+      return (await response.json()) as ProfileConnectionResponse;
+    },
+  });
+  const integrationProviderIds = new Set(
+    integrationConnectionQuery.data?.connections.accounts.map((account) => account.providerId) ??
+      [],
+  );
+  const hasGitHubIntegration = integrationProviderIds.has("github");
+  const hasGoogleIntegration = integrationProviderIds.has("google");
   const githubAccount = React.useMemo(
     () =>
       githubConnectionQuery.data?.connections.accounts.find(
@@ -1237,6 +1644,62 @@ function AppIndex() {
     githubReposQueryOptions(isGitHubFolderDialogOpen && hasGitHubConnection),
   );
   const refetchGitHubRepos = githubReposQuery.refetch;
+
+  const refetchVisibleMarksData = React.useCallback(async () => {
+    const refetchTasks: Array<Promise<unknown>> = [foldersQuery.refetch()];
+
+    if (isXFolderSelected) {
+      refetchTasks.push(xBookmarksQuery.refetch());
+    } else if (isGitHubStarsViewSelected) {
+      refetchTasks.push(githubStarsQuery.refetch());
+    } else if (searchMode === "semantic" && Boolean(semanticSearchState.queryText)) {
+      refetchTasks.push(searchQuery.refetch());
+    } else {
+      refetchTasks.push(bookmarksQuery.refetch());
+    }
+
+    await Promise.all(refetchTasks);
+  }, [
+    bookmarksQuery,
+    foldersQuery,
+    githubStarsQuery,
+    isGitHubStarsViewSelected,
+    isXFolderSelected,
+    searchMode,
+    searchQuery,
+    semanticSearchState.queryText,
+    xBookmarksQuery,
+  ]);
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    let lastRefetchAt = 0;
+    const triggerRefetch = () => {
+      const now = Date.now();
+      if (now - lastRefetchAt < 800) {
+        return;
+      }
+      lastRefetchAt = now;
+      void refetchVisibleMarksData();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        triggerRefetch();
+      }
+    };
+
+    window.addEventListener("focus", triggerRefetch);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", triggerRefetch);
+    };
+  }, [refetchVisibleMarksData]);
 
   const filteredGithubRepos = React.useMemo(() => {
     const list = githubReposQuery.data?.repos ?? [];
@@ -1436,6 +1899,47 @@ function AppIndex() {
     },
   });
 
+  const createBookmarksBulkMutation = useMutation({
+    mutationFn: async (payload: { items: Array<{ url: string; folder: string }> }) => {
+      const response = await fetch("/api/bookmarks", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const message = response.status === 401 ? "Please sign in." : "Could not save bookmarks.";
+        throw new Error(message);
+      }
+
+      return (await response.json()) as {
+        success: true;
+        mode: "bulk-import";
+        createdNow: number;
+        queued: number;
+        skipped: number;
+      };
+    },
+    onSuccess: async (result) => {
+      const totalCreated = result.createdNow + result.queued;
+      toast.success(
+        totalCreated > 0
+          ? `Saved ${totalCreated} bookmark${totalCreated === 1 ? "" : "s"}.`
+          : "No bookmarks saved.",
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: bookmarksQueryKey }),
+        queryClient.invalidateQueries({ queryKey: ["bookmarks", "search"] }),
+      ]);
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Could not save bookmarks.";
+      toast.error(message);
+    },
+  });
+
   const deleteBookmarkMutation = useMutation({
     mutationFn: async (bookmarkId: string) => {
       const response = await fetch("/api/bookmarks", {
@@ -1625,6 +2129,56 @@ function AppIndex() {
       const message =
         error instanceof Error ? error.message : "Could not update selected bookmarks.";
       toast.error(message);
+    },
+  });
+
+  const bulkMoveBookmarksMutation = useMutation({
+    mutationFn: async (payload: { ids: string[]; folderId: string; folderName: string }) => {
+      const uniqueIds = [...new Set(payload.ids)];
+      if (uniqueIds.length === 0) {
+        return { movedCount: 0, folderId: payload.folderId, folderName: payload.folderName };
+      }
+
+      const response = await fetch("/api/bookmarks", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "move-folder",
+          ids: uniqueIds,
+          folderId: payload.folderId,
+        }),
+      });
+      if (!response.ok) {
+        const errorBody = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(
+          response.status === 401
+            ? "Please sign in."
+            : errorBody?.error || "Could not move selected bookmarks.",
+        );
+      }
+
+      const result = (await response.json()) as { movedCount: number; folderId: string };
+      return { ...result, folderName: payload.folderName };
+    },
+    onSuccess: (result) => {
+      setSelectedBookmarkIds([]);
+      toast.success(
+        result.movedCount > 0
+          ? `Moved ${result.movedCount} bookmark${result.movedCount === 1 ? "" : "s"} to ${result.folderName}.`
+          : "No bookmarks moved.",
+      );
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Could not move selected bookmarks.";
+      toast.error(message);
+    },
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: bookmarksQueryKey }),
+        queryClient.invalidateQueries({ queryKey: ["bookmarks", "search"] }),
+      ]);
     },
   });
 
@@ -1884,8 +2438,26 @@ function AppIndex() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: githubReposQueryKey }),
         queryClient.invalidateQueries({ queryKey: ["profile", "github-connection"] }),
+        queryClient.invalidateQueries({ queryKey: ["profile", "connections-lite"] }),
         queryClient.invalidateQueries({ queryKey: bookmarkFoldersQueryKey }),
       ]);
+    },
+  });
+  const connectGoogleMutation = useMutation({
+    mutationFn: async () =>
+      await authClient.linkSocial(
+        {
+          provider: "google",
+          callbackURL: "/app",
+        },
+        {
+          onError: ({ error }) => {
+            toast.error(error.message || "Could not connect Google.");
+          },
+        },
+      ),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["profile", "connections-lite"] });
     },
   });
 
@@ -2023,6 +2595,57 @@ function AppIndex() {
     }
     void refetchGitHubRepos();
   }, [hasGitHubConnection, isGitHubFolderDialogOpen, refetchGitHubRepos]);
+
+  const renameFolderMutation = useMutation({
+    mutationFn: async (payload: { id: string; name: string }) => {
+      const response = await fetch("/api/bookmark-folders", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ id: payload.id, action: "rename", name: payload.name }),
+      });
+      if (!response.ok) {
+        const errorBody = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(
+          response.status === 401
+            ? "Please sign in."
+            : errorBody?.error || "Could not rename folder.",
+        );
+      }
+      return (await response.json()) as { success: true; folder: BookmarkFolderRecord };
+    },
+    onMutate: async (payload) => {
+      await queryClient.cancelQueries({ queryKey: bookmarkFoldersQueryKey });
+      const previousFolders =
+        queryClient.getQueryData<BookmarkFolderRecord[]>(bookmarkFoldersQueryKey);
+      queryClient.setQueryData(
+        bookmarkFoldersQueryKey,
+        (currentFolders: BookmarkFolderRecord[] | undefined) =>
+          currentFolders
+            ?.map((folder) =>
+              folder.id === payload.id ? { ...folder, name: payload.name } : folder,
+            )
+            .sort(compareBookmarkFolders),
+      );
+      return { previousFolders };
+    },
+    onSuccess: () => {
+      toast.success("Folder renamed.");
+    },
+    onError: (error, _payload, context) => {
+      queryClient.setQueryData(bookmarkFoldersQueryKey, context?.previousFolders);
+      const message = error instanceof Error ? error.message : "Could not rename folder.";
+      toast.error(message);
+    },
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: bookmarkFoldersQueryKey }),
+        queryClient.invalidateQueries({ queryKey: bookmarksQueryKey }),
+        queryClient.invalidateQueries({ queryKey: ["bookmarks", "search"] }),
+      ]);
+    },
+  });
 
   const markFolderSeenMutation = useMutation({
     mutationFn: async (folderId: string) => {
@@ -2348,6 +2971,21 @@ function AppIndex() {
     }
 
     setInputValue("");
+
+    const entries = nextUrl
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (entries.length > 1) {
+      createBookmarksBulkMutation.mutate({
+        items: entries.map((url) => ({
+          url,
+          folder: addFolder?.name ?? "default",
+        })),
+      });
+      return;
+    }
+
     createBookmarkMutation.mutate({
       url: nextUrl,
       folder: addFolder?.name ?? "default",
@@ -2371,6 +3009,11 @@ function AppIndex() {
 
   const submitGitHubFolder = (event: React.SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (githubResourceType === "stars") {
+      setIsGitHubFolderDialogOpen(false);
+      void setFolderQueryValue("github-stars");
+      return;
+    }
     const repo = githubRepoValue.trim();
     if (!repo) {
       return;
@@ -2618,7 +3261,7 @@ function AppIndex() {
       : filteredRows;
   const fetchedRows: BookmarkRecord[] = normalizedSearch
     ? searchMode === "semantic"
-      ? (searchQuery.data ?? []).filter((row) => bookmarkMatchesSearch(row, advancedSearchQuery))
+      ? (searchQuery.data ?? [])
       : searchMode === "fuzzy"
         ? fuzzyRows
         : filteredRows.filter((row) => bookmarkMatchesSearch(row, advancedSearchQuery))
@@ -2632,11 +3275,12 @@ function AppIndex() {
     manualFolders[0] ??
     null;
   const isTodoAddTarget = addFolder ? isTodoFolderRecord(addFolder) : false;
-  const visibleRows = isXFolderSelected
-    ? []
-    : activeFolderId
-      ? fetchedRows.filter((row) => row.folderId === activeFolderId)
-      : fetchedRows;
+  const visibleRows =
+    isXFolderSelected || isGitHubStarsViewSelected
+      ? []
+      : activeFolderId
+        ? fetchedRows.filter((row) => row.folderId === activeFolderId)
+        : fetchedRows;
   const selectedBookmarkIdSet = React.useMemo(
     () => new Set(selectedBookmarkIds),
     [selectedBookmarkIds],
@@ -2678,6 +3322,12 @@ function AppIndex() {
       .toLowerCase()
       .includes(normalizedSearchLower);
   });
+  const githubStarsRows = (githubStarsQuery.data?.stars ?? []).filter((row) => {
+    if (!isGitHubStarsViewSelected || !normalizedSearchLower) {
+      return true;
+    }
+    return [row.title, row.owner ?? ""].join(" ").toLowerCase().includes(normalizedSearchLower);
+  });
   const liveFolderSourceTypes = new Set(
     folders.filter((folder) => folder.sourceType !== "local").map((folder) => folder.sourceType),
   );
@@ -2685,35 +3335,55 @@ function AppIndex() {
   const folderHotkeyTargets = folders.slice(0, 4);
   const isLoadingRows = isXFolderSelected
     ? xBookmarksQuery.isLoading
-    : search.trim() && searchMode === "semantic"
-      ? searchQuery.isLoading
-      : bookmarksQuery.isLoading;
+    : isGitHubStarsViewSelected
+      ? githubStarsQuery.isLoading
+      : search.trim() && searchMode === "semantic"
+        ? searchQuery.isLoading
+        : bookmarksQuery.isLoading;
   const isRefreshingRows = isXFolderSelected
     ? xBookmarksQuery.isFetching
-    : search.trim() && searchMode === "semantic"
-      ? searchQuery.isFetching
-      : bookmarksQuery.isFetching;
+    : isGitHubStarsViewSelected
+      ? githubStarsQuery.isFetching
+      : search.trim() && searchMode === "semantic"
+        ? searchQuery.isFetching
+        : bookmarksQuery.isFetching;
   const rowPaginationScope = [
-    isXFolderSelected ? "x" : "bookmarks",
+    isXFolderSelected ? "x" : isGitHubStarsViewSelected ? "github-stars" : "bookmarks",
     activeFolderId ?? "all",
     searchMode,
     search,
   ].join(":");
   const visibleRowLimit =
     rowPagination.scope === rowPaginationScope ? rowPagination.limit : ROW_PAGE_SIZE;
-  const totalVisibleRows = isXFolderSelected ? xRows.length : visibleRows.length;
+  const totalVisibleRows = isXFolderSelected
+    ? xRows.length
+    : isGitHubStarsViewSelected
+      ? githubStarsRows.length
+      : visibleRows.length;
   const hasMoreRows = totalVisibleRows > visibleRowLimit;
   const hasMoreBookmarkRowsFromServer =
     !isXFolderSelected &&
+    !isGitHubStarsViewSelected &&
     !isLoadingRows &&
     (bookmarksQuery.data?.length ?? 0) >= bookmarkFetchLimit;
-  const hasMoreRowsWithPagination = hasMoreRows || hasMoreBookmarkRowsFromServer;
+  const hasMoreGitHubStarsFromServer =
+    isGitHubStarsViewSelected &&
+    !isLoadingRows &&
+    (githubStarsQuery.data?.stars.length ?? 0) >= githubStarsFetchLimit;
+  const hasMoreRowsWithPagination =
+    hasMoreRows || hasMoreBookmarkRowsFromServer || hasMoreGitHubStarsFromServer;
   const displayedXRows = xRows.slice(0, visibleRowLimit);
+  const displayedGitHubStarsRows = githubStarsRows.slice(0, visibleRowLimit);
   const displayedVisibleRows = visibleRows.slice(0, visibleRowLimit);
-  const displayedRowCount = isXFolderSelected ? displayedXRows.length : displayedVisibleRows.length;
+  const displayedRowCount = isXFolderSelected
+    ? displayedXRows.length
+    : isGitHubStarsViewSelected
+      ? displayedGitHubStarsRows.length
+      : displayedVisibleRows.length;
   const [virtualListRef, virtualStart, virtualEnd, virtualPaddingTop, virtualPaddingBottom] =
     useWindowVirtualRange(displayedRowCount, rowPaginationScope);
   const virtualDisplayedXRows = displayedXRows.slice(virtualStart, virtualEnd);
+  const virtualDisplayedGitHubStarsRows = displayedGitHubStarsRows.slice(virtualStart, virtualEnd);
   const virtualDisplayedVisibleRows = displayedVisibleRows.slice(virtualStart, virtualEnd);
   const [hoveredBookmarkId, setHoveredBookmarkId] = React.useState<string | null>(null);
 
@@ -2882,6 +3552,13 @@ function AppIndex() {
   useHotkey("Alt+4", () => {
     setSelectedFolderId(folderHotkeyTargets[3]?.id ?? null);
   });
+  useHotkey({ key: "h" }, () => {
+    if (isInputLikeActiveElement()) {
+      return;
+    }
+    const nextValue = !isMarksFolderStripVisible();
+    setMarksFolderStripVisible(nextValue);
+  });
 
   useHotkey({ key: "/", shift: true }, () => {
     setIsHotkeysDialogOpen(true);
@@ -2903,7 +3580,7 @@ function AppIndex() {
       return;
     }
     try {
-      await navigator.clipboard.writeText(lines.join("\n"));
+      await navigator.clipboard.writeText(lines.join(", "));
       toast.success(`Copied ${lines.length} URL${lines.length === 1 ? "" : "s"}.`);
     } catch {
       toast.error("Could not copy selected URLs.");
@@ -3014,6 +3691,7 @@ function AppIndex() {
               }
               value={inputValue}
               onChange={(event) => setInputValue(event.target.value)}
+              onFocus={(event) => event.currentTarget.select()}
               required
             />
             <DropdownMenu>
@@ -3053,43 +3731,52 @@ function AppIndex() {
                   ) : null}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger className="gap-2">
+                {searchMode === "semantic" ? (
+                  <DropdownMenuItem disabled className="gap-2 text-xs">
                     <SlidersHorizontalIcon className="size-3.5" />
-                    Advanced filters
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-52">
-                    <DropdownMenuItem
-                      className="gap-2"
-                      onClick={() => setInputValue(toggleSearchToken(inputValue, "later:true"))}
-                    >
-                      <Clock3Icon className="size-3.5" />
-                      Later marks
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      className="gap-2"
-                      onClick={() => setInputValue(toggleSearchToken(inputValue, "important:true"))}
-                    >
-                      <FlagIcon className="size-3.5" />
-                      Important marks
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      className="gap-2"
-                      onClick={() => setInputValue(toggleSearchToken(inputValue, "public:true"))}
-                    >
-                      <GlobeIcon className="size-3.5" />
-                      Public marks
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      className="gap-2"
-                      onClick={() => setInputValue(clearFlagTokens(inputValue))}
-                    >
-                      <XIcon className="size-3.5" />
-                      Clear mark filters
-                    </DropdownMenuItem>
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
+                    Use fuzzy/exact for advanced filters
+                  </DropdownMenuItem>
+                ) : (
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger className="gap-2">
+                      <SlidersHorizontalIcon className="size-3.5" />
+                      Advanced filters
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="w-52">
+                      <DropdownMenuItem
+                        className="gap-2"
+                        onClick={() => setInputValue(toggleSearchToken(inputValue, "later:true"))}
+                      >
+                        <Clock3Icon className="size-3.5" />
+                        Later marks
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        className="gap-2"
+                        onClick={() =>
+                          setInputValue(toggleSearchToken(inputValue, "important:true"))
+                        }
+                      >
+                        <FlagIcon className="size-3.5" />
+                        Important marks
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        className="gap-2"
+                        onClick={() => setInputValue(toggleSearchToken(inputValue, "public:true"))}
+                      >
+                        <GlobeIcon className="size-3.5" />
+                        Public marks
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        className="gap-2"
+                        onClick={() => setInputValue(clearFlagTokens(inputValue))}
+                      >
+                        <XIcon className="size-3.5" />
+                        Clear mark filters
+                      </DropdownMenuItem>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="gap-2" render={<Link to="/app/learn" />}>
                   <BookOpenIcon className="size-3.5" />
@@ -3115,137 +3802,209 @@ function AppIndex() {
               {createBookmarkMutation.isPending ? "saving" : "add"}
             </span>
           </div>
+          {searchMode === "semantic" && semanticSearchState.hasAdvancedFilters ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Advanced filter tokens are disabled in semantic mode. Switch to fuzzy or exact search
+              to use filters like <code>later:true</code> or <code>host:example.com</code>.
+            </p>
+          ) : null}
         </form>
 
-        <div className="my-4 flex flex-wrap items-center gap-2">
-          {foldersQuery.isLoading
-            ? Array.from({ length: 5 }).map((_, index) => (
-                <div
-                  key={`folder-skeleton-${index}`}
-                  className="frappe-shimmer h-9 w-28 shrink-0 rounded-lg bg-muted/30"
-                />
-              ))
-            : null}
+        {showFolderStrip ? (
+          <div className="my-4 flex flex-wrap items-center gap-2">
+            {foldersQuery.isLoading
+              ? Array.from({ length: 5 }).map((_, index) => (
+                  <div
+                    key={`folder-skeleton-${index}`}
+                    className="frappe-shimmer h-9 w-28 shrink-0 rounded-lg bg-muted/30"
+                  />
+                ))
+              : null}
 
-          {!foldersQuery.isLoading ? (
-            <button
-              type="button"
-              className={cn(
-                MARKS_FOLDER_CHIP_CLASS,
-                "bg-transparent hover:bg-muted/25",
-                !activeFolderId && "bg-primary/10",
-              )}
-              aria-pressed={!activeFolderId}
-              onClick={() => setSelectedFolderId(null)}
-              onFocus={prefetchAllRows}
-              onMouseEnter={prefetchAllRows}
-            >
-              <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="font-medium">All</span>
-            </button>
-          ) : null}
-
-          {!foldersQuery.isLoading
-            ? folders.map((folder) => (
-                <MarksFolderPickerChip
-                  key={folder.id}
-                  folder={folder}
-                  isActive={activeFolderId === folder.id}
-                  onSelect={() => {
-                    setSelectedFolderId(folder.id);
-                    if (folder.unseenCount > 0) {
-                      markFolderSeenMutation.mutate(folder.id);
-                    }
-                  }}
-                  onPrefetch={() => prefetchFolderRows(folder)}
-                  pinFolderMutation={pinFolderMutation}
-                  syncFolderMutation={syncFolderMutation}
-                  markFolderSeenMutation={markFolderSeenMutation}
-                  deleteFolderMutation={deleteFolderMutation}
-                  onOpenRssSettings={() => openRssSettingsDialog(folder)}
-                  onExportJson={() => exportFolderBookmarks(folder, "json")}
-                  onExportCsv={() => exportFolderBookmarks(folder, "csv")}
-                  onImport={() => promptImportBookmarks(folder.id)}
-                  onDelete={() => deleteFolderMutation.mutate(folder.id)}
-                />
-              ))
-            : null}
-
-          <DropdownMenu>
-            <DropdownMenuTrigger className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-muted/10 px-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground">
-              <PlusIcon className="size-3.5" />
-              Live folder
-            </DropdownMenuTrigger>
-            <DropdownMenuContent className="w-72" align="start">
-              {LIVE_FOLDER_OPTIONS.map((option) => {
-                const alreadyAdded =
-                  option.sourceType !== "rss" &&
-                  option.sourceType !== "github" &&
-                  liveFolderSourceTypes.has(option.sourceType);
-
-                return (
-                  <DropdownMenuItem
-                    key={option.sourceType}
-                    disabled={alreadyAdded || createLiveFolderMutation.isPending}
-                    className="items-start gap-3 py-2.5"
-                    onClick={() => {
-                      if (option.sourceType === "rss") {
-                        setIsRssFolderDialogOpen(true);
-                        return;
-                      }
-
-                      if (option.sourceType === "github") {
-                        setIsGitHubFolderDialogOpen(true);
-                        return;
-                      }
-
-                      if (option.sourceType === "x") {
-                        window.location.href = "/api/x/connect";
-                        return;
-                      }
-
-                      toast.info(`${option.name} connection setup is coming next.`);
-                    }}
-                  >
-                    <span className="mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-sm bg-muted text-muted-foreground">
-                      <FolderSourceIcon folder={{ name: "", sourceType: option.sourceType }} />
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block text-sm text-foreground">
-                        {alreadyAdded ? `${option.name} added` : option.name}
-                      </span>
-                      <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
-                        {option.description}
-                      </span>
-                    </span>
-                  </DropdownMenuItem>
-                );
-              })}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="items-start gap-3 py-2.5"
-                disabled={createLiveFolderMutation.isPending}
-                onClick={() => setIsCustomFolderDialogOpen(true)}
+            {!foldersQuery.isLoading ? (
+              <button
+                type="button"
+                className={cn(
+                  MARKS_FOLDER_CHIP_CLASS,
+                  "bg-transparent hover:bg-muted/25",
+                  !activeFolderId && "bg-primary/10",
+                )}
+                aria-pressed={!activeFolderId}
+                onClick={() => setSelectedFolderId(null)}
+                onFocus={prefetchAllRows}
+                onMouseEnter={prefetchAllRows}
               >
-                <FolderIcon className="mt-0.5 size-4" />
-                <span>
-                  <span className="block text-sm text-foreground">Custom folder</span>
-                  <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
-                    Create a manual folder for saved bookmarks.
+                <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="font-medium">All</span>
+              </button>
+            ) : null}
+
+            {!foldersQuery.isLoading
+              ? folders.map((folder) => (
+                  <MarksFolderPickerChip
+                    key={folder.id}
+                    folder={folder}
+                    isActive={activeFolderId === folder.id}
+                    onSelect={() => {
+                      setSelectedFolderId(folder.id);
+                      if (folder.unseenCount > 0) {
+                        markFolderSeenMutation.mutate(folder.id);
+                      }
+                    }}
+                    onPrefetch={() => prefetchFolderRows(folder)}
+                    renameFolderMutation={renameFolderMutation}
+                    pinFolderMutation={pinFolderMutation}
+                    syncFolderMutation={syncFolderMutation}
+                    markFolderSeenMutation={markFolderSeenMutation}
+                    deleteFolderMutation={deleteFolderMutation}
+                    onOpenRssSettings={() => openRssSettingsDialog(folder)}
+                    onExportJson={() => exportFolderBookmarks(folder, "json")}
+                    onExportCsv={() => exportFolderBookmarks(folder, "csv")}
+                    onImport={() => promptImportBookmarks(folder.id)}
+                    onDelete={() => deleteFolderMutation.mutate(folder.id)}
+                  />
+                ))
+              : null}
+
+            <DropdownMenu>
+              <DropdownMenuTrigger className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-muted/10 px-2.5 text-xs text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground">
+                <PlusIcon className="size-3.5" />
+                Integrate
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="w-60" align="start">
+                <DropdownMenuItem
+                  className="items-start gap-2 py-2"
+                  disabled={createLiveFolderMutation.isPending}
+                  onClick={() => setIsRssFolderDialogOpen(true)}
+                >
+                  <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm bg-muted text-muted-foreground">
+                    <RssIcon className="size-3.5" />
                   </span>
-                </span>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+                  <span className="min-w-0">
+                    <span className="block text-sm text-foreground">RSS</span>
+                    <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                      Add RSS feed folder.
+                    </span>
+                  </span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="items-start gap-2 py-2"
+                  disabled={connectGitHubMutation.isPending}
+                  onClick={() => {
+                    if (hasGitHubIntegration) {
+                      setIsGitHubFolderDialogOpen(true);
+                      return;
+                    }
+                    connectGitHubMutation.mutate();
+                  }}
+                >
+                  <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm bg-muted text-muted-foreground">
+                    {connectGitHubMutation.isPending ? (
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                    ) : (
+                      <SiGithub className="size-3.5" />
+                    )}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-sm text-foreground">
+                      {hasGitHubIntegration ? "GitHub" : "Connect GitHub"}
+                    </span>
+                    <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                      {hasGitHubIntegration
+                        ? "Open GitHub integration options."
+                        : "Enable GitHub integration for stars and repo folders."}
+                    </span>
+                  </span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="items-start gap-2 py-2"
+                  disabled={connectGoogleMutation.isPending}
+                  onClick={() => {
+                    if (hasGoogleIntegration) {
+                      openExternalUrl("https://mail.google.com/mail/u/0/#inbox");
+                      return;
+                    }
+                    connectGoogleMutation.mutate();
+                  }}
+                >
+                  <span className="mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-sm bg-muted text-muted-foreground">
+                    {connectGoogleMutation.isPending ? (
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                    ) : (
+                      <SiGoogle className="size-3.5" />
+                    )}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-sm text-foreground">
+                      {hasGoogleIntegration ? "Gmail Inbox" : "Connect Google"}
+                    </span>
+                    <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                      {hasGoogleIntegration
+                        ? "Open Gmail inbox from connected account."
+                        : "Enable Google integration."}
+                    </span>
+                  </span>
+                </DropdownMenuItem>
+                {LIVE_FOLDER_OPTIONS.map((option) => {
+                  if (option.sourceType === "rss" || option.sourceType === "github") {
+                    return null;
+                  }
+                  const alreadyAdded = liveFolderSourceTypes.has(option.sourceType);
+
+                  return (
+                    <DropdownMenuItem
+                      key={option.sourceType}
+                      disabled={alreadyAdded || createLiveFolderMutation.isPending}
+                      className="items-start gap-2 py-2"
+                      onClick={() => {
+                        if (option.sourceType === "x") {
+                          window.location.href = "/api/x/connect";
+                          return;
+                        }
+
+                        toast.info(`${option.name} connection setup is coming next.`);
+                      }}
+                    >
+                      <span className="mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-sm bg-muted text-muted-foreground">
+                        <FolderSourceIcon folder={{ name: "", sourceType: option.sourceType }} />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-sm text-foreground">
+                          {alreadyAdded ? `${option.name} added` : option.name}
+                        </span>
+                        <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                          {option.description}
+                        </span>
+                      </span>
+                    </DropdownMenuItem>
+                  );
+                })}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="items-start gap-2 py-2"
+                  disabled={createLiveFolderMutation.isPending}
+                  onClick={() => setIsCustomFolderDialogOpen(true)}
+                >
+                  <FolderIcon className="mt-0.5 size-4" />
+                  <span>
+                    <span className="block text-sm text-foreground">Custom folder</span>
+                    <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                      Create a manual folder for saved bookmarks.
+                    </span>
+                  </span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        ) : null}
 
         <Dialog open={isHotkeysDialogOpen} onOpenChange={setIsHotkeysDialogOpen}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Keyboard shortcuts</DialogTitle>
               <DialogDescription>
-                Move faster with hotkeys for folders, search modes, navigation, and quick input
-                focus.
+                Move faster with shortcuts for input focus, row actions, folder filters, and search.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-2 text-sm">
@@ -3255,6 +4014,7 @@ function AppIndex() {
                   <Kbd>/</Kbd>
                   <Kbd>Mod</Kbd>
                   <Kbd>Enter</Kbd>
+                  <Kbd>Enter</Kbd>
                 </span>
               </div>
               <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
@@ -3262,6 +4022,45 @@ function AppIndex() {
                 <span className="inline-flex items-center gap-1">
                   <Kbd>Mod</Kbd>
                   <Kbd>,</Kbd>
+                  <span className="px-1 text-muted-foreground">/</span>
+                  <Kbd>Alt</Kbd>
+                  <Kbd>P</Kbd>
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
+                <span>Important toggle (hovered row)</span>
+                <span className="inline-flex items-center gap-1">
+                  <Kbd>M</Kbd>
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
+                <span>Later toggle (hovered row)</span>
+                <span className="inline-flex items-center gap-1">
+                  <Kbd>L</Kbd>
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
+                <span>Public/private toggle (hovered row)</span>
+                <span className="inline-flex items-center gap-1">
+                  <Kbd>P</Kbd>
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
+                <span>Select hovered row</span>
+                <span className="inline-flex items-center gap-1">
+                  <Kbd>S</Kbd>
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
+                <span>Copy hovered row URL</span>
+                <span className="inline-flex items-center gap-1">
+                  <Kbd>C</Kbd>
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
+                <span>Rename hovered row</span>
+                <span className="inline-flex items-center gap-1">
+                  <Kbd>R</Kbd>
                 </span>
               </div>
               <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
@@ -3288,6 +4087,12 @@ function AppIndex() {
                 <span className="inline-flex items-center gap-1">
                   <Kbd>Alt</Kbd>
                   <Kbd>0-4</Kbd>
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
+                <span>Toggle folder strip</span>
+                <span className="inline-flex items-center gap-1">
+                  <Kbd>H</Kbd>
                 </span>
               </div>
               <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
@@ -3382,10 +4187,27 @@ function AppIndex() {
             <DialogHeader>
               <DialogTitle>Add GitHub live folder</DialogTitle>
               <DialogDescription>
-                Choose a repository from your connected account, or paste owner/repo manually.
+                Choose a repository from your connected account, or open Stars view in-app.
               </DialogDescription>
             </DialogHeader>
             <form className="grid gap-4" onSubmit={submitGitHubFolder}>
+              <button
+                type="button"
+                className={cn(
+                  "flex items-center justify-between rounded-md border border-border/70 bg-muted/10 px-3 py-2 text-left text-sm transition-colors hover:bg-muted/20",
+                  isGitHubStarsViewSelected && "border-primary/35 bg-primary/10",
+                )}
+                onClick={() => {
+                  setIsGitHubFolderDialogOpen(false);
+                  void setFolderQueryValue("github-stars");
+                }}
+              >
+                <span className="inline-flex items-center gap-2">
+                  <StarIcon className="size-4 text-muted-foreground" />
+                  GitHub Stars view
+                </span>
+                <span className="text-xs text-muted-foreground">Open</span>
+              </button>
               {githubConnectionQuery.isLoading ? (
                 <p className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
                   Checking GitHub connection...
@@ -3500,7 +4322,7 @@ function AppIndex() {
               <div className="grid gap-2">
                 <p className="text-sm font-medium text-foreground">Stream</p>
                 <div className="grid grid-cols-2 gap-2">
-                  {(["all", "issues", "pulls", "releases"] as const).map((resourceType) => (
+                  {(["all", "stars", "pulls", "releases"] as const).map((resourceType) => (
                     <button
                       key={resourceType}
                       type="button"
@@ -3510,6 +4332,8 @@ function AppIndex() {
                     >
                       {resourceType === "pulls" ? (
                         <GitPullRequestIcon className="size-3.5" />
+                      ) : resourceType === "stars" ? (
+                        <StarIcon className="size-3.5" />
                       ) : (
                         <SiGithub className="size-3.5" />
                       )}
@@ -3550,7 +4374,7 @@ function AppIndex() {
                   className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50"
                   disabled={
                     createLiveFolderMutation.isPending ||
-                    !githubRepoValue.trim() ||
+                    (githubResourceType !== "stars" && !githubRepoValue.trim()) ||
                     githubConnectionQuery.isLoading
                   }
                 >
@@ -3778,7 +4602,7 @@ function AppIndex() {
           onChange={onImportBookmarksFile}
         />
 
-        {!isXFolderSelected && isSelectionMode ? (
+        {!isXFolderSelected && !isGitHubStarsViewSelected && isSelectionMode ? (
           <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
             <button
               type="button"
@@ -3840,6 +4664,54 @@ function AppIndex() {
               <ClipboardIcon className="size-3.5" />
               Copy URLs
             </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                disabled={selectedVisibleRows.length === 0 || bulkMoveBookmarksMutation.isPending}
+              >
+                {bulkMoveBookmarksMutation.isPending ? (
+                  <Loader2Icon className="size-3.5 animate-spin" />
+                ) : (
+                  <FolderIcon className="size-3.5" />
+                )}
+                Move
+                <ChevronDownIcon className="size-3.5" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-52">
+                {manualFolders.length > 0 ? (
+                  manualFolders.map((folder) =>
+                    (() => {
+                      const targetIsTodo = isTodoFolderRecord(folder);
+                      const hasTodoMismatch = selectedVisibleRows.some((row) => {
+                        const sourceFolder = foldersById.get(row.folderId);
+                        if (!sourceFolder) {
+                          return true;
+                        }
+                        return isTodoFolderRecord(sourceFolder) !== targetIsTodo;
+                      });
+                      return (
+                        <DropdownMenuItem
+                          key={`move-selected-${folder.id}`}
+                          disabled={bulkMoveBookmarksMutation.isPending || hasTodoMismatch}
+                          onClick={() =>
+                            bulkMoveBookmarksMutation.mutate({
+                              ids: selectedVisibleRows.map((row) => row.id),
+                              folderId: folder.id,
+                              folderName: getFolderDisplayName(folder),
+                            })
+                          }
+                        >
+                          <FolderSourceIcon folder={folder} />
+                          <span className="truncate">{getFolderDisplayName(folder)}</span>
+                        </DropdownMenuItem>
+                      );
+                    })(),
+                  )
+                ) : (
+                  <DropdownMenuItem disabled>No folders available</DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
             <button
               type="button"
               className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
@@ -3976,6 +4848,16 @@ function AppIndex() {
               ) : null}
             </li>
           ) : null}
+          {!isLoadingRows && isGitHubStarsViewSelected && githubStarsQuery.data?.error ? (
+            <li className="px-2 py-10 text-center">
+              <p className="text-sm text-foreground">{githubStarsQuery.data.error}</p>
+              {githubStarsQuery.data.status ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  GitHub API status {githubStarsQuery.data.status}
+                </p>
+              ) : null}
+            </li>
+          ) : null}
 
           {!isLoadingRows && displayedRowCount > 0 && virtualPaddingTop > 0 ? (
             <li
@@ -4058,9 +4940,83 @@ function AppIndex() {
                 </li>
               );
             })}
+          {!isLoadingRows &&
+            isGitHubStarsViewSelected &&
+            !githubStarsQuery.data?.error &&
+            virtualDisplayedGitHubStarsRows.map((item) => {
+              const useGitHubAnchorRow = isSafeExternalBookmarkHref(item.url);
+              return (
+                <li key={item.id} className="py-1">
+                  <ContextMenu>
+                    <ContextMenuTrigger
+                      className="block w-full rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+                      onMouseEnter={() => setHoveredBookmarkId(item.id)}
+                      onFocus={() => setHoveredBookmarkId(item.id)}
+                    >
+                      <BookmarkRowInteractive
+                        useAnchor={useGitHubAnchorRow}
+                        href={item.url}
+                        className={cn(
+                          "grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_10rem] items-start gap-3 rounded-md px-2 py-2 text-left transition-all duration-150 hover:-translate-y-px hover:bg-muted/40 hover:shadow-sm hover:shadow-foreground/5 focus-visible:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring/30 data-[state=open]:bg-muted/50",
+                          useGitHubAnchorRow && "text-foreground visited:text-muted-foreground",
+                        )}
+                        onButtonClick={() => openExternalUrl(item.url)}
+                        onButtonKeyDown={(event) =>
+                          handleRowKeyDown(event, () => openExternalUrl(item.url))
+                        }
+                      >
+                        <div className="flex min-w-0 items-start gap-2.5">
+                          <span className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground">
+                            <StarIcon className="size-3.5" />
+                          </span>
+                          <div className="min-w-0">
+                            <span
+                              className={cn(
+                                "block truncate text-sm",
+                                useGitHubAnchorRow ? "text-inherit" : "text-foreground",
+                              )}
+                            >
+                              {item.title}
+                            </span>
+                            {search.trim() ? (
+                              <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
+                                <span
+                                  className={cn(
+                                    "truncate text-xs",
+                                    useGitHubAnchorRow
+                                      ? "text-inherit opacity-90"
+                                      : "text-muted-foreground",
+                                  )}
+                                >
+                                  {item.owner ? `@${item.owner}` : "GitHub"}
+                                </span>
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                        <CreatedAtCell iso={item.createdAt} inheritLinkTint={useGitHubAnchorRow} />
+                      </BookmarkRowInteractive>
+                    </ContextMenuTrigger>
+                    <ContextMenuContent className="min-w-52">
+                      <ContextMenuItem onClick={() => void copyBookmarkUrl(item.url)}>
+                        <ClipboardIcon />
+                        Copy URL
+                      </ContextMenuItem>
+                      <ContextMenuItem
+                        onClick={() => window.open(item.url, "_blank", "noopener,noreferrer")}
+                      >
+                        <ExternalLinkIcon />
+                        Open on GitHub
+                      </ContextMenuItem>
+                    </ContextMenuContent>
+                  </ContextMenu>
+                </li>
+              );
+            })}
 
           {!isLoadingRows &&
             !isXFolderSelected &&
+            !isGitHubStarsViewSelected &&
             virtualDisplayedVisibleRows.map((item) => {
               const isTodoBookmark = isTodoFolderName(item.folderName);
               const isLink = item.contentType === "link";
@@ -4144,16 +5100,18 @@ function AppIndex() {
                       >
                         <div className="flex min-w-0 items-start gap-2.5">
                           {isSelectionMode ? (
-                            <input
-                              type="checkbox"
+                            <Checkbox
                               aria-label="Select bookmark"
-                              className="mt-0.5 size-3.5 shrink-0 rounded-[4px] border border-muted-foreground/40 bg-background accent-foreground/80"
+                              className="mt-0.5"
                               checked={selectedBookmarkIdSet.has(item.id)}
-                              onChange={(event) => {
-                                event.stopPropagation();
+                              onCheckedChange={(checked, event) => {
+                                event?.event.stopPropagation();
                                 setSelectedBookmarkIds((current) => {
                                   if (current.includes(item.id)) {
                                     return current.filter((id) => id !== item.id);
+                                  }
+                                  if (checked !== true) {
+                                    return current;
                                   }
                                   return [...current, item.id];
                                 });
@@ -4425,6 +5383,53 @@ function AppIndex() {
                         {item.visibility === "public" ? <LockIcon /> : <GlobeIcon />}
                         {item.visibility === "public" ? "Make private" : "Make public "}
                       </ContextMenuItem>
+                      <ContextMenuSub>
+                        <ContextMenuSubTrigger className="py-2">
+                          {bulkMoveBookmarksMutation.isPending ? (
+                            <Loader2Icon className="size-4 animate-spin" />
+                          ) : (
+                            <FolderIcon />
+                          )}
+                          Move to folder
+                        </ContextMenuSubTrigger>
+                        <ContextMenuSubContent className="min-w-52">
+                          {manualFolders.length > 0 ? (
+                            manualFolders.map((folder) =>
+                              (() => {
+                                const sourceFolder = foldersById.get(item.folderId);
+                                const hasTodoMismatch = sourceFolder
+                                  ? isTodoFolderRecord(sourceFolder) !== isTodoFolderRecord(folder)
+                                  : true;
+                                return (
+                                  <ContextMenuItem
+                                    key={`move-single-${item.id}-${folder.id}`}
+                                    className="py-2"
+                                    disabled={
+                                      bulkMoveBookmarksMutation.isPending ||
+                                      item.folderId === folder.id ||
+                                      hasTodoMismatch
+                                    }
+                                    onClick={() =>
+                                      bulkMoveBookmarksMutation.mutate({
+                                        ids: [item.id],
+                                        folderId: folder.id,
+                                        folderName: getFolderDisplayName(folder),
+                                      })
+                                    }
+                                  >
+                                    <FolderSourceIcon folder={folder} />
+                                    <span className="truncate">{getFolderDisplayName(folder)}</span>
+                                  </ContextMenuItem>
+                                );
+                              })(),
+                            )
+                          ) : (
+                            <ContextMenuItem className="py-2" disabled>
+                              No folders available
+                            </ContextMenuItem>
+                          )}
+                        </ContextMenuSubContent>
+                      </ContextMenuSub>
                       <ContextMenuSeparator />
                       <ContextMenuItem
                         className="py-2"
@@ -4484,7 +5489,10 @@ function AppIndex() {
             </li>
           ) : null}
 
-          {!isLoadingRows && !xBookmarksQuery.data?.error && totalVisibleRows === 0 ? (
+          {!isLoadingRows &&
+          (!isXFolderSelected || !xBookmarksQuery.data?.error) &&
+          (!isGitHubStarsViewSelected || !githubStarsQuery.data?.error) &&
+          totalVisibleRows === 0 ? (
             <li className="px-2 py-10 text-center text-sm text-muted-foreground">
               {isXFolderSelected
                 ? "No X bookmarks found."

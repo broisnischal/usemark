@@ -12,11 +12,15 @@ import {
   AlertCircleIcon,
   AlertTriangleIcon,
   CheckCircle2Icon,
+  ClipboardIcon,
+  DownloadIcon,
   ExternalLinkIcon,
+  FileUpIcon,
   Loader2Icon,
   MailIcon,
   RssIcon,
   ShieldIcon,
+  UploadIcon,
   UserIcon,
   UsersIcon,
 } from "lucide-react";
@@ -26,10 +30,15 @@ import { toast } from "sonner";
 import { HoldToDelete } from "@/components/hold-to-delete";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { authClient } from "@/lib/auth/auth-client";
 import { authQueryOptions } from "@/lib/auth/queries";
+import {
+  isClipboardAutoPasteEnabled,
+  setClipboardAutoPasteEnabled,
+} from "@/lib/client-preferences";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_auth/app/profile")({
@@ -89,6 +98,49 @@ interface ProfileResponse {
 
 const profileQueryKey = ["profile"] as const;
 
+function parseBrowserBookmarksHtml(fileContent: string) {
+  if (typeof DOMParser === "undefined") {
+    return [];
+  }
+
+  const parsed = new DOMParser().parseFromString(fileContent, "text/html");
+  const anchors = Array.from(parsed.querySelectorAll("a"));
+  const items = anchors
+    .map((anchor) => {
+      const url = anchor.getAttribute("href")?.trim() ?? "";
+      if (!url) {
+        return null;
+      }
+      const title = anchor.textContent?.trim() ?? "";
+      return { url, title: title || null };
+    })
+    .filter((item): item is NonNullable<typeof item> => item !== null);
+  return items;
+}
+
+function detectBrowserFromBookmarksHtml(fileContent: string) {
+  const content = fileContent.toLowerCase();
+  if (content.includes("firefox")) {
+    return "Firefox";
+  }
+  if (content.includes("brave")) {
+    return "Brave";
+  }
+  if (content.includes("edg") || content.includes("edge")) {
+    return "Edge";
+  }
+  if (content.includes("opera")) {
+    return "Opera";
+  }
+  if (content.includes("chrome")) {
+    return "Chrome";
+  }
+  if (content.includes("safari")) {
+    return "Safari";
+  }
+  return "Browser";
+}
+
 async function readProfile() {
   const response = await fetch("/api/profile", { method: "GET" });
   if (!response.ok) {
@@ -127,6 +179,8 @@ function ProfilePage() {
   const [deleteConfirmation, setDeleteConfirmation] = React.useState("");
   const [showDeleteAccount, setShowDeleteAccount] = React.useState(false);
   const [utmDraft, setUtmDraft] = React.useState<{ enabled: boolean; source: string } | null>(null);
+  const [clipboardAutoPasteEnabled, setClipboardAutoPasteEnabledState] = React.useState(false);
+  const browserImportInputRef = React.useRef<HTMLInputElement | null>(null);
   const profileQuery = useQuery({
     queryKey: profileQueryKey,
     queryFn: readProfile,
@@ -136,6 +190,10 @@ function ProfilePage() {
   const profile = profileQuery.data;
   const providerIds = new Set(profile?.connections.accounts.map((item) => item.providerId) ?? []);
   const hasXConnection = Boolean(profile?.connections.x.length);
+
+  React.useEffect(() => {
+    setClipboardAutoPasteEnabledState(isClipboardAutoPasteEnabled());
+  }, []);
 
   const connectGitHubMutation = useMutation({
     mutationFn: async () =>
@@ -230,9 +288,124 @@ function ProfilePage() {
     },
   });
 
+  const exportBookmarksMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/bookmarks", { method: "GET" });
+      if (!response.ok) {
+        throw new Error(
+          response.status === 401 ? "Please sign in." : "Could not export bookmarks.",
+        );
+      }
+      return (await response.json()) as Array<{
+        id: string;
+        title: string | null;
+        url: string;
+        tag: string;
+        folderName: string;
+        contentType: "link" | "text";
+        createdAt: string;
+      }>;
+    },
+    onSuccess: (rows) => {
+      const blob = new Blob([JSON.stringify(rows, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "bookmarks-export.json";
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+      toast.success(`Exported ${rows.length} bookmark${rows.length === 1 ? "" : "s"}.`);
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Could not export bookmarks.";
+      toast.error(message);
+    },
+  });
+
+  const importBrowserBookmarksMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const raw = await file.text();
+      const items = parseBrowserBookmarksHtml(raw);
+      if (items.length === 0) {
+        throw new Error("No bookmarks found in file.");
+      }
+      const browserName = detectBrowserFromBookmarksHtml(raw);
+      const folderName = `${browserName} import ${new Date().toLocaleDateString()}`;
+
+      const folderResponse = await fetch("/api/bookmark-folders", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: folderName,
+          sourceType: "local",
+          syncEnabled: false,
+        }),
+      });
+      if (!folderResponse.ok) {
+        throw new Error(
+          folderResponse.status === 401 ? "Please sign in." : "Could not create import folder.",
+        );
+      }
+      const createdFolder = (await folderResponse.json()) as { id: string; name: string };
+
+      const response = await fetch("/api/bookmarks", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          dedupeByUrlAndFolder: false,
+          items: items.map((item) => ({
+            url: item.url,
+            title: item.title,
+            folder: createdFolder.name,
+            folderId: createdFolder.id,
+          })),
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(
+          response.status === 401 ? "Please sign in." : "Could not import bookmarks.",
+        );
+      }
+      const importResult = (await response.json()) as {
+        success: true;
+        createdNow: number;
+        queued: number;
+        skipped: number;
+      };
+      return {
+        ...importResult,
+        folderName: createdFolder.name,
+      };
+    },
+    onSuccess: async (result) => {
+      const created = result.createdNow + result.queued;
+      toast.success(`Import complete: ${created} added to ${result.folderName}.`);
+      await queryClient.invalidateQueries({ queryKey: profileQueryKey });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Could not import bookmarks.";
+      toast.error(message);
+    },
+  });
+
+  const onImportBrowserBookmarksFile = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) {
+      return;
+    }
+    importBrowserBookmarksMutation.mutate(file);
+  };
+
   if (profileQuery.isLoading) {
     return (
-      <main className="mx-auto w-full max-w-3xl px-4 py-10">
+      <main className="mx-auto w-full max-w-6xl px-4 pt-6 pb-12">
         <div className="flex min-h-64 flex-col items-center justify-center gap-3 rounded-2xl border border-border/60 bg-card/50 py-16 text-sm text-muted-foreground">
           <Loader2Icon className="size-6 animate-spin" />
           Loading profile…
@@ -243,7 +416,7 @@ function ProfilePage() {
 
   if (!profile) {
     return (
-      <main className="mx-auto w-full max-w-3xl px-4 py-10">
+      <main className="mx-auto w-full max-w-6xl px-4 pt-6 pb-12">
         <Card className="border-dashed">
           <CardContent className="py-12 text-center text-sm text-muted-foreground">
             Could not load profile.
@@ -258,7 +431,7 @@ function ProfilePage() {
   const effectiveUtmSource = utmDraft?.source ?? (profile.preferences.utmSource || "usemark");
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 pt-8 pb-16">
+    <main className="mx-auto w-full max-w-6xl px-4 pt-6 pb-12">
       <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">Profile</h1>
@@ -642,14 +815,13 @@ function ProfilePage() {
                   : "border-border/70 bg-muted/10 hover:bg-muted/20",
               )}
             >
-              <input
+              <Checkbox
                 id="utm-enabled-toggle"
-                type="checkbox"
-                className="mt-1 size-4 shrink-0 rounded border-border accent-primary"
+                className="mt-1"
                 checked={effectiveUtmEnabled}
-                onChange={(event) =>
+                onCheckedChange={(checked) =>
                   setUtmDraft((current) => ({
-                    enabled: event.target.checked,
+                    enabled: checked === true,
                     source: current?.source ?? effectiveUtmSource,
                   }))
                 }
@@ -706,6 +878,104 @@ function ProfilePage() {
                 <code className="rounded bg-background/80 px-1 font-mono">?utm_source=usemark</code>
               </p>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/70 shadow-sm">
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <ClipboardIcon className="size-4 text-muted-foreground" />
+              <CardTitle className="text-base">Auto-paste link</CardTitle>
+            </div>
+            <CardDescription>
+              Automatically paste a valid clipboard link into the Marks input.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <label
+              htmlFor="clipboard-auto-paste-toggle"
+              className={cn(
+                "flex cursor-pointer items-start gap-4 rounded-xl border p-4 transition-colors",
+                clipboardAutoPasteEnabled
+                  ? "border-primary/35 bg-primary/5"
+                  : "border-border/70 bg-muted/10 hover:bg-muted/20",
+              )}
+            >
+              <Checkbox
+                id="clipboard-auto-paste-toggle"
+                className="mt-1"
+                checked={clipboardAutoPasteEnabled}
+                onCheckedChange={(checked) => {
+                  const enabled = checked === true;
+                  setClipboardAutoPasteEnabled(enabled);
+                  setClipboardAutoPasteEnabledState(enabled);
+                  toast.success(enabled ? "Auto-paste link enabled." : "Auto-paste link disabled.");
+                }}
+              />
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-foreground">
+                  Enable auto-paste link
+                </span>
+                <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
+                  Runs when this tab is opened or focused, and only for valid URLs.
+                </span>
+              </span>
+            </label>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/70 shadow-sm">
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <UploadIcon className="size-4 text-muted-foreground" />
+              <CardTitle className="text-base">Data</CardTitle>
+            </div>
+            <CardDescription>
+              Export your saved bookmarks, or import browser bookmarks HTML into your default
+              folder.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 gap-2 rounded-xl transition-transform active:scale-[0.98]"
+                disabled={exportBookmarksMutation.isPending}
+                onClick={() => exportBookmarksMutation.mutate()}
+              >
+                {exportBookmarksMutation.isPending ? (
+                  <Loader2Icon className="size-4 animate-spin" />
+                ) : (
+                  <DownloadIcon className="size-4" />
+                )}
+                Export bookmarks
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 gap-2 rounded-xl transition-transform active:scale-[0.98]"
+                disabled={importBrowserBookmarksMutation.isPending}
+                onClick={() => browserImportInputRef.current?.click()}
+              >
+                {importBrowserBookmarksMutation.isPending ? (
+                  <Loader2Icon className="size-4 animate-spin" />
+                ) : (
+                  <FileUpIcon className="size-4" />
+                )}
+                Import browser bookmarks
+              </Button>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Use a bookmarks HTML file exported from Chrome/Firefox/Safari.
+            </p>
+            <input
+              ref={browserImportInputRef}
+              type="file"
+              accept=".html,text/html"
+              className="hidden"
+              onChange={onImportBrowserBookmarksFile}
+            />
           </CardContent>
         </Card>
 

@@ -7,6 +7,7 @@ export const bookmarkFoldersQueryKey = ["bookmark-folders"] as const;
 export const xBookmarksQueryKey = ["x-bookmarks"] as const;
 export const githubItemsQueryKey = ["github-items"] as const;
 export const githubReposQueryKey = ["github-repos"] as const;
+export const githubStarsQueryKey = ["github-stars"] as const;
 
 const FOLDER_DATA_STALE_TIME = 60_000;
 const FOLDER_DATA_GC_TIME = 15 * 60_000;
@@ -51,6 +52,20 @@ export interface GitHubReposResponse {
   connected: boolean;
   hasRepoScope: boolean;
   repos: Array<{ id: number; fullName: string }>;
+  error?: string;
+  status?: number;
+  detail?: string;
+}
+
+export interface GitHubStarsResponse {
+  connected: boolean;
+  stars: Array<{
+    id: string;
+    url: string;
+    title: string;
+    owner: string | null;
+    createdAt: string | null;
+  }>;
   error?: string;
   status?: number;
   detail?: string;
@@ -180,6 +195,31 @@ export const githubReposQueryOptions = (enabled: boolean) =>
         signal,
       });
       const data = (await response.json()) as GitHubReposResponse;
+      if (!response.ok && data.error) {
+        return data;
+      }
+      return data;
+    },
+  });
+
+export const githubStarsQueryOptions = (enabled: boolean, limit?: number) =>
+  queryOptions({
+    queryKey: [...githubStarsQueryKey, limit ?? "all"] as const,
+    enabled,
+    retry: false,
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
+    queryFn: async ({ signal }) => {
+      const params = new URLSearchParams();
+      if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) {
+        params.set("limit", String(Math.max(1, Math.floor(limit))));
+      }
+      const queryString = params.toString();
+      const response = await fetch(`/api/github/stars${queryString ? `?${queryString}` : ""}`, {
+        method: "GET",
+        signal,
+      });
+      const data = (await response.json()) as GitHubStarsResponse;
       if (!response.ok && data.error) {
         return data;
       }

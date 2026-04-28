@@ -198,7 +198,7 @@ function FeedsPage() {
   });
 
   return (
-    <div className="relative mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 sm:py-10">
+    <main className="relative mx-auto w-full max-w-6xl px-4 pt-6 pb-12">
       <div
         aria-hidden
         className="pointer-events-none absolute inset-x-0 top-14 -z-10 h-56 bg-[radial-gradient(ellipse_at_top,oklch(0.95_0.01_250/.7),transparent_70%)] dark:bg-[radial-gradient(ellipse_at_top,oklch(0.3_0.02_250/.25),transparent_70%)]"
@@ -353,6 +353,6 @@ function FeedsPage() {
         </Link>
         .
       </p>
-    </div>
+    </main>
   );
 }

@@ -4,6 +4,8 @@ import {
   BookmarkIcon,
   BugIcon,
   CircleHelpIcon,
+  EyeIcon,
+  EyeOffIcon,
   FileTextIcon,
   LogOutIcon,
   MonitorIcon,
@@ -13,6 +15,7 @@ import {
   Settings2Icon,
   SunIcon,
 } from "lucide-react";
+import * as React from "react";
 
 import { useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
@@ -31,6 +34,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { authClient } from "@/lib/auth/auth-client";
 import { authQueryOptions } from "@/lib/auth/queries";
+import {
+  isMarksFolderStripVisible,
+  MARKS_FOLDER_STRIP_VISIBILITY_EVENT,
+  setMarksFolderStripVisible,
+} from "@/lib/client-preferences";
 
 export const Route = createFileRoute("/_auth/app")({
   component: AppLayout,
@@ -43,6 +51,23 @@ function AppLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const marksNavActive = pathname === "/app" || pathname === "/app/";
   const feedsNavActive = pathname.startsWith("/app/feeds");
+  const [isMarksFolderStripVisibleState, setIsMarksFolderStripVisibleState] = React.useState(true);
+
+  React.useEffect(() => {
+    setIsMarksFolderStripVisibleState(isMarksFolderStripVisible());
+
+    const syncPreference = () => {
+      setIsMarksFolderStripVisibleState(isMarksFolderStripVisible());
+    };
+
+    window.addEventListener(MARKS_FOLDER_STRIP_VISIBILITY_EVENT, syncPreference);
+    window.addEventListener("storage", syncPreference);
+
+    return () => {
+      window.removeEventListener(MARKS_FOLDER_STRIP_VISIBILITY_EVENT, syncPreference);
+      window.removeEventListener("storage", syncPreference);
+    };
+  }, []);
 
   const signOut = async () => {
     await authClient.signOut({
@@ -103,71 +128,100 @@ function AppLayout() {
             </Link>
           </nav>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  variant="outline"
-                  size="icon-sm"
-                  className="size-9 rounded-full border-border/70 bg-muted/25 shadow-sm hover:bg-muted/50"
-                />
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="icon-sm"
+              className="size-9 rounded-full border-border/70 bg-muted/25 shadow-sm hover:bg-muted/50"
+              aria-label={
+                isMarksFolderStripVisibleState
+                  ? "Hide marks folder strip"
+                  : "Show marks folder strip"
               }
+              title={
+                isMarksFolderStripVisibleState
+                  ? "Hide marks folder strip"
+                  : "Show marks folder strip"
+              }
+              onClick={() => {
+                const nextValue = !isMarksFolderStripVisibleState;
+                setIsMarksFolderStripVisibleState(nextValue);
+                setMarksFolderStripVisible(nextValue);
+              }}
             >
-              <Settings2Icon className="size-4" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-60">
-              <DropdownMenuGroup>
-                <DropdownMenuItem render={<Link to="/app/profile" />}>
-                  <Settings2Icon />
-                  Settings
+              {isMarksFolderStripVisibleState ? (
+                <EyeOffIcon className="size-4" />
+              ) : (
+                <EyeIcon className="size-4" />
+              )}
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="outline"
+                    size="icon-sm"
+                    className="size-9 rounded-full border-border/70 bg-muted/25 shadow-sm hover:bg-muted/50"
+                  />
+                }
+              >
+                <Settings2Icon className="size-4" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-60">
+                <DropdownMenuGroup>
+                  <DropdownMenuItem render={<Link to="/app/profile" />}>
+                    <Settings2Icon />
+                    Settings
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem render={<Link to="/app/help" />}>
+                  <CircleHelpIcon />
+                  Help & Support
                 </DropdownMenuItem>
-              </DropdownMenuGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem render={<Link to="/app/help" />}>
-                <CircleHelpIcon />
-                Help & Support
-              </DropdownMenuItem>
-              <DropdownMenuItem render={<Link to="/app/terms" />}>
-                <FileTextIcon />
-                Terms & Conditions
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={reportBug}>
-                <BugIcon />
-                Report bug
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <PaletteIcon />
-                  Theme
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent side="left" align="start" className="min-w-44">
-                  <DropdownMenuRadioGroup
-                    value={theme}
-                    onValueChange={(value) => setTheme(value as "dark" | "light" | "system")}
-                  >
-                    <DropdownMenuRadioItem value="light">
-                      <SunIcon />
-                      Light
-                    </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="dark">
-                      <MoonIcon />
-                      Dark
-                    </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="system">
-                      <MonitorIcon />
-                      System
-                    </DropdownMenuRadioItem>
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem variant="destructive" onClick={() => void signOut()}>
-                <LogOutIcon />
-                Sign out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+                <DropdownMenuItem render={<Link to="/app/terms" />}>
+                  <FileTextIcon />
+                  Terms & Conditions
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={reportBug}>
+                  <BugIcon />
+                  Report bug
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <PaletteIcon />
+                    Theme
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent side="left" align="start" className="min-w-44">
+                    <DropdownMenuRadioGroup
+                      value={theme}
+                      onValueChange={(value) => setTheme(value as "dark" | "light" | "system")}
+                    >
+                      <DropdownMenuRadioItem value="light">
+                        <SunIcon />
+                        Light
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="dark">
+                        <MoonIcon />
+                        Dark
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="system">
+                        <MonitorIcon />
+                        System
+                      </DropdownMenuRadioItem>
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onClick={() => void signOut()}>
+                  <LogOutIcon />
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </header>
 

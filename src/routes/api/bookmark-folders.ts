@@ -8,6 +8,7 @@ import {
   listBookmarkFoldersForUser,
   markBookmarkFolderSeenForUser,
   pinBookmarkFolderForUser,
+  renameBookmarkFolderForUser,
   syncGitHubBookmarkFolder,
   syncRssBookmarkFolder,
   unfollowRssBookmarkFolderForUser,
@@ -244,6 +245,7 @@ export const Route = createFileRoute("/api/bookmark-folders")({
         const payload = (await request.json()) as {
           id?: string;
           action?: string;
+          name?: string;
           syncIntervalMinutes?: number;
           rssFetchLimit?: number;
           rssKeepRecentCount?: number;
@@ -323,6 +325,32 @@ export const Route = createFileRoute("/api/bookmark-folders")({
             return Response.json({ error: "RSS folder not found." }, { status: 404 });
           }
           return Response.json({ success: true, folder: updated });
+        }
+
+        if (payload.action === "rename") {
+          const renamed = await renameBookmarkFolderForUser(userId, folderId, payload.name ?? "");
+          if (renamed.status === "not-found") {
+            return Response.json({ error: "Folder not found." }, { status: 404 });
+          }
+          if (renamed.status === "not-editable") {
+            return Response.json(
+              { error: "Only manual and RSS folders can be renamed." },
+              { status: 400 },
+            );
+          }
+          if (renamed.status === "protected") {
+            return Response.json(
+              { error: "The default folder cannot be renamed." },
+              { status: 400 },
+            );
+          }
+          if (renamed.status === "duplicate") {
+            return Response.json(
+              { error: "A folder with that name already exists." },
+              { status: 400 },
+            );
+          }
+          return Response.json({ success: true, folder: renamed.folder });
         }
 
         return Response.json({ error: "Unsupported action." }, { status: 400 });

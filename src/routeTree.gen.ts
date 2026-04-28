@@ -25,6 +25,7 @@ import { Route as AuthAppIndexRouteImport } from './routes/_auth/app/index'
 import { Route as ApiXConnectRouteImport } from './routes/api/x/connect'
 import { Route as ApiXCallbackRouteImport } from './routes/api/x/callback'
 import { Route as ApiXBookmarksRouteImport } from './routes/api/x/bookmarks'
+import { Route as ApiGithubStarsRouteImport } from './routes/api/github/stars'
 import { Route as ApiGithubReposRouteImport } from './routes/api/github/repos'
 import { Route as ApiGithubItemsRouteImport } from './routes/api/github/items'
 import { Route as ApiBookmarksSearchRouteImport } from './routes/api/bookmarks.search'
@@ -115,6 +116,11 @@ const ApiXBookmarksRoute = ApiXBookmarksRouteImport.update({
   path: '/api/x/bookmarks',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiGithubStarsRoute = ApiGithubStarsRouteImport.update({
+  id: '/api/github/stars',
+  path: '/api/github/stars',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiGithubReposRoute = ApiGithubReposRouteImport.update({
   id: '/api/github/repos',
   path: '/api/github/repos',
@@ -194,6 +200,7 @@ export interface FileRoutesByFullPath {
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
   '/api/github/items': typeof ApiGithubItemsRoute
   '/api/github/repos': typeof ApiGithubReposRoute
+  '/api/github/stars': typeof ApiGithubStarsRoute
   '/api/x/bookmarks': typeof ApiXBookmarksRoute
   '/api/x/callback': typeof ApiXCallbackRoute
   '/api/x/connect': typeof ApiXConnectRoute
@@ -220,6 +227,7 @@ export interface FileRoutesByTo {
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
   '/api/github/items': typeof ApiGithubItemsRoute
   '/api/github/repos': typeof ApiGithubReposRoute
+  '/api/github/stars': typeof ApiGithubStarsRoute
   '/api/x/bookmarks': typeof ApiXBookmarksRoute
   '/api/x/callback': typeof ApiXCallbackRoute
   '/api/x/connect': typeof ApiXConnectRoute
@@ -250,6 +258,7 @@ export interface FileRoutesById {
   '/api/bookmarks/search': typeof ApiBookmarksSearchRoute
   '/api/github/items': typeof ApiGithubItemsRoute
   '/api/github/repos': typeof ApiGithubReposRoute
+  '/api/github/stars': typeof ApiGithubStarsRoute
   '/api/x/bookmarks': typeof ApiXBookmarksRoute
   '/api/x/callback': typeof ApiXCallbackRoute
   '/api/x/connect': typeof ApiXConnectRoute
@@ -279,6 +288,7 @@ export interface FileRouteTypes {
     | '/api/bookmarks/search'
     | '/api/github/items'
     | '/api/github/repos'
+    | '/api/github/stars'
     | '/api/x/bookmarks'
     | '/api/x/callback'
     | '/api/x/connect'
@@ -305,6 +315,7 @@ export interface FileRouteTypes {
     | '/api/bookmarks/search'
     | '/api/github/items'
     | '/api/github/repos'
+    | '/api/github/stars'
     | '/api/x/bookmarks'
     | '/api/x/callback'
     | '/api/x/connect'
@@ -334,6 +345,7 @@ export interface FileRouteTypes {
     | '/api/bookmarks/search'
     | '/api/github/items'
     | '/api/github/repos'
+    | '/api/github/stars'
     | '/api/x/bookmarks'
     | '/api/x/callback'
     | '/api/x/connect'
@@ -353,6 +365,7 @@ export interface RootRouteChildren {
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiGithubItemsRoute: typeof ApiGithubItemsRoute
   ApiGithubReposRoute: typeof ApiGithubReposRoute
+  ApiGithubStarsRoute: typeof ApiGithubStarsRoute
   ApiXBookmarksRoute: typeof ApiXBookmarksRoute
   ApiXCallbackRoute: typeof ApiXCallbackRoute
   ApiXConnectRoute: typeof ApiXConnectRoute
@@ -470,6 +483,13 @@ declare module '@tanstack/react-router' {
       path: '/api/x/bookmarks'
       fullPath: '/api/x/bookmarks'
       preLoaderRoute: typeof ApiXBookmarksRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/github/stars': {
+      id: '/api/github/stars'
+      path: '/api/github/stars'
+      fullPath: '/api/github/stars'
+      preLoaderRoute: typeof ApiGithubStarsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/github/repos': {
@@ -638,6 +658,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiGithubItemsRoute: ApiGithubItemsRoute,
   ApiGithubReposRoute: ApiGithubReposRoute,
+  ApiGithubStarsRoute: ApiGithubStarsRoute,
   ApiXBookmarksRoute: ApiXBookmarksRoute,
   ApiXCallbackRoute: ApiXCallbackRoute,
   ApiXConnectRoute: ApiXConnectRoute,

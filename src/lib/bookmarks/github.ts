@@ -17,6 +17,14 @@ export interface GitHubItemRecord {
   updatedAt: string | null;
 }
 
+export interface GitHubStarRecord {
+  id: string;
+  url: string;
+  title: string;
+  owner: string | null;
+  createdAt: string | null;
+}
+
 export class GitHubApiError extends Error {
   status: number;
   detail: string;
@@ -284,6 +292,56 @@ export async function listGitHubReposForUser(userId: string) {
     repos: repos.map((repo) => ({
       id: repo.id,
       fullName: repo.full_name as string,
+    })),
+  };
+}
+
+export async function listGitHubStarsForUser(userId: string, limit: number = 100) {
+  const githubAccount = await getGitHubAccessTokenForUser(userId);
+  const token = githubAccount?.accessToken ?? null;
+  if (!token) {
+    return { connected: false, stars: [] as GitHubStarRecord[] };
+  }
+
+  const normalizedLimit =
+    Number.isFinite(limit) && limit > 0 ? Math.max(1, Math.min(500, Math.floor(limit))) : 100;
+  const stars: Array<{
+    id: number;
+    html_url: string;
+    full_name?: string | null;
+    owner?: { login?: string | null } | null;
+    pushed_at?: string | null;
+    updated_at?: string | null;
+  }> = [];
+  const perPage = 100;
+  for (let page = 1; stars.length < normalizedLimit && page <= 5; page += 1) {
+    const pageRows = await fetchGitHub<
+      Array<{
+        id: number;
+        html_url: string;
+        full_name?: string | null;
+        owner?: { login?: string | null } | null;
+        pushed_at?: string | null;
+        updated_at?: string | null;
+      }>
+    >(
+      `https://api.github.com/user/starred?per_page=${perPage}&page=${page}&sort=created&direction=desc`,
+      token,
+    );
+    stars.push(...pageRows);
+    if (pageRows.length < perPage) {
+      break;
+    }
+  }
+
+  return {
+    connected: true,
+    stars: stars.slice(0, normalizedLimit).map((repo) => ({
+      id: String(repo.id),
+      url: repo.html_url,
+      title: repo.full_name || "GitHub repository",
+      owner: repo.owner?.login ?? null,
+      createdAt: repo.updated_at ?? repo.pushed_at ?? null,
     })),
   };
 }

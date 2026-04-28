@@ -49,6 +49,9 @@ export function toEmbeddingText(input: {
 }
 
 function parseEmbeddingVector(result: unknown): number[] {
+  const isNumberArray = (value: unknown): value is number[] =>
+    Array.isArray(value) && value.every((item) => typeof item === "number");
+
   if (Array.isArray(result) && result.every((item) => typeof item === "number")) {
     return result;
   }
@@ -58,15 +61,18 @@ function parseEmbeddingVector(result: unknown): number[] {
 
     if (Array.isArray(objectResult.data) && objectResult.data.length > 0) {
       const firstItem = objectResult.data[0];
-      if (Array.isArray(firstItem) && firstItem.every((item) => typeof item === "number")) {
+      if (isNumberArray(firstItem)) {
         return firstItem;
+      }
+      if (firstItem && typeof firstItem === "object") {
+        const firstRecord = firstItem as Record<string, unknown>;
+        if (isNumberArray(firstRecord.embedding)) {
+          return firstRecord.embedding;
+        }
       }
     }
 
-    if (
-      Array.isArray(objectResult.embedding) &&
-      objectResult.embedding.every((item) => typeof item === "number")
-    ) {
+    if (isNumberArray(objectResult.embedding)) {
       return objectResult.embedding;
     }
   }

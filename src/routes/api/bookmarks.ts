@@ -11,6 +11,7 @@ import {
   refetchBookmarkMetadataForUser,
   renameBookmarkTitleForUser,
   requestBookmarkEmbeddingForUser,
+  moveBookmarksToFolderForUser,
   updateBookmarkFlagsForUser,
 } from "@/lib/bookmarks/functions";
 import { inngest } from "@/lib/inngest/client";
@@ -53,14 +54,17 @@ export const Route = createFileRoute("/api/bookmarks")({
           note?: string;
           folder?: string;
           category?: string;
+          dedupeByUrlAndFolder?: boolean;
           items?: Array<{
             url?: string;
             note?: string;
             folder?: string;
+            folderId?: string;
             category?: string;
             title?: string | null;
           }>;
         };
+        const shouldDedupe = payload.dedupeByUrlAndFolder !== false;
 
         const importItems = Array.isArray(payload.items)
           ? payload.items
@@ -73,6 +77,7 @@ export const Route = createFileRoute("/api/bookmarks")({
                   url,
                   note: item.note,
                   folder: item.folder,
+                  folderId: item.folderId,
                   category: item.category,
                   title: item.title,
                 };
@@ -80,10 +85,12 @@ export const Route = createFileRoute("/api/bookmarks")({
               .filter((item): item is NonNullable<typeof item> => item !== null)
           : [];
         if (importItems.length > 0) {
-          const immediateItems = importItems.slice(0, IMPORT_INITIAL_BATCH_SIZE);
-          const deferredItems = importItems.slice(IMPORT_INITIAL_BATCH_SIZE);
+          const immediateItems = shouldDedupe
+            ? importItems.slice(0, IMPORT_INITIAL_BATCH_SIZE)
+            : importItems;
+          const deferredItems = shouldDedupe ? importItems.slice(IMPORT_INITIAL_BATCH_SIZE) : [];
           const immediateResult = await createBookmarksBatchForUser(userId, immediateItems, {
-            dedupeByUrlAndFolder: true,
+            dedupeByUrlAndFolder: shouldDedupe,
           });
 
           try {
@@ -112,7 +119,7 @@ export const Route = createFileRoute("/api/bookmarks")({
               });
             } catch {
               const deferredResult = await createBookmarksBatchForUser(userId, deferredItems, {
-                dedupeByUrlAndFolder: true,
+                dedupeByUrlAndFolder: shouldDedupe,
               });
               await Promise.all(
                 deferredResult.createdIds.map((bookmarkId) => processBookmarkEmbedding(bookmarkId)),
@@ -170,6 +177,8 @@ export const Route = createFileRoute("/api/bookmarks")({
 
         const payload = (await request.json()) as {
           id?: string;
+          ids?: string[];
+          folderId?: string;
           title?: string;
           action?: string;
           force?: boolean;
@@ -179,7 +188,45 @@ export const Route = createFileRoute("/api/bookmarks")({
           visibility?: "private" | "public";
         };
         const bookmarkId = payload.id?.trim() ?? "";
+        const bookmarkIds = Array.isArray(payload.ids)
+          ? [...new Set(payload.ids.map((id) => id.trim()).filter(Boolean))]
+          : bookmarkId
+            ? [bookmarkId]
+            : [];
+        const targetFolderId = payload.folderId?.trim() ?? "";
         const title = payload.title?.trim() ?? "";
+
+        if (payload.action === "move-folder") {
+          if (bookmarkIds.length === 0) {
+            return Response.json(
+              { error: "At least one bookmark id is required." },
+              { status: 400 },
+            );
+          }
+          if (!targetFolderId) {
+            return Response.json({ error: "Folder id is required." }, { status: 400 });
+          }
+
+          const moved = await moveBookmarksToFolderForUser(userId, bookmarkIds, targetFolderId);
+          if (!moved) {
+            return Response.json({ error: "Folder not found." }, { status: 404 });
+          }
+          if ("error" in moved && moved.error === "todo-folder-mismatch") {
+            return Response.json(
+              {
+                error: "Cannot move between todo folders and non-todo folders.",
+              },
+              { status: 400 },
+            );
+          }
+
+          return Response.json({
+            success: true,
+            ids: bookmarkIds,
+            folderId: targetFolderId,
+            movedCount: moved.movedCount,
+          });
+        }
 
         if (!bookmarkId) {
           return Response.json({ error: "Bookmark id is required." }, { status: 400 });

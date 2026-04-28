@@ -10,6 +10,7 @@ export interface BookmarkMetadata {
 const FETCH_TIMEOUT_MS = 8_000;
 const MAX_HTML_CONTENT_LENGTH_BYTES = 1_500_000;
 const MAX_HTML_READ_BYTES = 1_500_000;
+const MAX_BODY_TEXT_CHARS = 120_000;
 
 function decodeHtmlEntities(value: string) {
   return value
@@ -63,6 +64,80 @@ function readTextCandidates($: ReturnType<typeof loadHtml>, selectors: string[],
   return truncate(chunks.join("\n"), limit);
 }
 
+function readTaggedMainContent(
+  $: ReturnType<typeof loadHtml>,
+  selectors: string[],
+  limits: Partial<Record<"h" | "p" | "li" | "blockquote" | "code", number>>,
+) {
+  const roots = selectors.join(", ");
+  const sections: string[] = [];
+
+  const collect = (label: string, selector: string, limit: number) => {
+    const values: string[] = [];
+    const seen = new Set<string>();
+    $(roots)
+      .find(selector)
+      .each((_, element) => {
+        if (values.length >= limit) {
+          return false;
+        }
+        const text = collapseWhitespace($(element).text());
+        if (!text || seen.has(text)) {
+          return;
+        }
+        seen.add(text);
+        values.push(text);
+      });
+    if (values.length > 0) {
+      sections.push(`${label}:\n${values.map((value) => `- ${value}`).join("\n")}`);
+    }
+  };
+
+  collect("headings", "h1, h2, h3, h4", limits.h ?? 50);
+  collect("paragraphs", "p", limits.p ?? 400);
+  collect("list_items", "li", limits.li ?? 300);
+  collect("quotes", "blockquote", limits.blockquote ?? 80);
+  collect("code_blocks", "pre, code", limits.code ?? 120);
+
+  return sections.join("\n\n");
+}
+
+function toAbsoluteUrl(href: string, baseUrl: string) {
+  const value = href.trim();
+  if (!value) {
+    return "";
+  }
+  try {
+    return new URL(value, baseUrl).toString();
+  } catch {
+    return "";
+  }
+}
+
+function readReferenceLinks($: ReturnType<typeof loadHtml>, sourceUrl: string, limit: number) {
+  const scopedRoots = $("article, main, [role='main']");
+  const roots = scopedRoots.length > 0 ? scopedRoots : $("body");
+  const references: string[] = [];
+  const seenUrls = new Set<string>();
+  roots.find("a[href]").each((_, element) => {
+    if (references.length >= limit) {
+      return false;
+    }
+    const href = $(element).attr("href") ?? "";
+    const absoluteUrl = toAbsoluteUrl(href, sourceUrl);
+    if (!absoluteUrl || seenUrls.has(absoluteUrl)) {
+      return;
+    }
+    const label = collapseWhitespace($(element).text());
+    if (!label && absoluteUrl.startsWith(sourceUrl)) {
+      return;
+    }
+    seenUrls.add(absoluteUrl);
+    references.push(label ? `${label} -> ${absoluteUrl}` : absoluteUrl);
+  });
+  return references;
+}
+
 async function readTextWithByteLimit(response: Response, byteLimit: number) {
   if (!response.body) {
     return await response.text();
@@ -99,7 +174,10 @@ async function readTextWithByteLimit(response: Response, byteLimit: number) {
 function createMetadata(title: string | null, description: string | null, content?: string | null) {
   const normalizedTitle = title?.trim() || null;
   const normalizedDescription = description?.trim() || null;
-  const semanticText = [normalizedTitle, normalizedDescription, content].filter(Boolean).join("\n");
+  const normalizedContent = content?.trim() || null;
+  const semanticText = normalizedContent
+    ? normalizedContent
+    : [normalizedTitle, normalizedDescription].filter(Boolean).join("\n");
 
   return {
     title: normalizedTitle,
@@ -199,6 +277,10 @@ async function fetchHtmlMetadata(url: string) {
     collapseWhitespace($("head > title").first().text());
   const description = readMeta($, ["description", "og:description", "twitter:description"]);
   const siteName = readMeta($, ["og:site_name"]);
+  const author =
+    readMeta($, ["author", "article:author", "og:article:author"]) ||
+    collapseWhitespace($("meta[name='byline']").first().attr("content") ?? "");
+  const keywords = readMeta($, ["keywords", "news_keywords"]);
   const publishedAt =
     readMeta($, [
       "article:published_time",
@@ -214,7 +296,25 @@ async function fetchHtmlMetadata(url: string) {
     ["main h1, main h2, article h1, article h2", "h1, h2"],
     600,
   );
-  const bodyText = readTextCandidates($, ["main", "article", "[role='main']", "body"], 8_000);
+  const bodyText = readTextCandidates(
+    $,
+    [
+      "article",
+      "main",
+      "[role='main']",
+      "main p, article p, main li, article li, main pre, article pre",
+      "body",
+    ],
+    MAX_BODY_TEXT_CHARS,
+  );
+  const taggedMainContent = readTaggedMainContent($, ["article", "main", "[role='main']", "body"], {
+    h: 80,
+    p: 500,
+    li: 400,
+    blockquote: 120,
+    code: 160,
+  });
+  const references = readReferenceLinks($, url, 30);
   const extractedHost = (() => {
     try {
       return new URL(url).hostname.replace(/^www\./, "");
@@ -224,14 +324,19 @@ async function fetchHtmlMetadata(url: string) {
   })();
 
   const semanticText = [
+    "page_document:",
     title ? `title: ${title}` : "",
-    description ? `description: ${description}` : "",
+    description ? `summary: ${description}` : "",
     siteName ? `site_name: ${siteName}` : "",
+    author ? `author: ${author}` : "",
     publishedAt ? `published_at: ${publishedAt}` : "",
+    keywords ? `keywords: ${keywords}` : "",
     extractedHost ? `host: ${extractedHost}` : "",
     canonical || urlFromMeta ? `canonical_url: ${canonical || urlFromMeta}` : "",
-    headings ? `headings:\n${headings}` : "",
-    bodyText ? `content:\n${bodyText}` : "",
+    headings ? `\nheadings:\n${headings}` : "",
+    taggedMainContent ? `\nstructured_content:\n${taggedMainContent}` : "",
+    bodyText ? `\nmain_content_plain:\n${bodyText}` : "",
+    references.length > 0 ? `\nreferences:\n${references.map((ref) => `- ${ref}`).join("\n")}` : "",
   ]
     .filter(Boolean)
     .join("\n");

@@ -1183,6 +1183,72 @@ export async function updateBookmarkFlagsForUser(
   return true;
 }
 
+export async function moveBookmarksToFolderForUser(
+  userId: string,
+  bookmarkIds: string[],
+  folderId: string,
+) {
+  const normalizedFolderId = folderId.trim();
+  if (!normalizedFolderId) {
+    throw new Error("Folder id is required.");
+  }
+
+  const normalizedBookmarkIds = [...new Set(bookmarkIds.map((id) => id.trim()).filter(Boolean))];
+  if (normalizedBookmarkIds.length === 0) {
+    return { movedCount: 0 };
+  }
+
+  const isTodoLikeFolder = (folder: { sourceType: string; name: string }) =>
+    folder.sourceType === "todo" || folder.name.toLowerCase().startsWith("todo:");
+
+  const folder = await db
+    .select({
+      id: bookmarkFolder.id,
+      sourceType: bookmarkFolder.sourceType,
+      name: bookmarkFolder.name,
+    })
+    .from(bookmarkFolder)
+    .where(and(eq(bookmarkFolder.userId, userId), eq(bookmarkFolder.id, normalizedFolderId)))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!folder) {
+    return null;
+  }
+
+  const ownedBookmarks = await db
+    .select({
+      id: bookmark.id,
+      sourceFolderSourceType: bookmarkFolder.sourceType,
+      sourceFolderName: bookmarkFolder.name,
+    })
+    .from(bookmark)
+    .innerJoin(bookmarkFolder, eq(bookmark.folderId, bookmarkFolder.id))
+    .where(and(eq(bookmark.userId, userId), inArray(bookmark.id, normalizedBookmarkIds)));
+  if (ownedBookmarks.length === 0) {
+    return { movedCount: 0 };
+  }
+
+  const targetIsTodoLike = isTodoLikeFolder(folder);
+  const hasTodoMismatch = ownedBookmarks.some((row) => {
+    const sourceIsTodoLike = isTodoLikeFolder({
+      sourceType: row.sourceFolderSourceType,
+      name: row.sourceFolderName,
+    });
+    return sourceIsTodoLike !== targetIsTodoLike;
+  });
+  if (hasTodoMismatch) {
+    return { movedCount: 0, error: "todo-folder-mismatch" as const };
+  }
+
+  const ownedBookmarkIds = ownedBookmarks.map((row) => row.id);
+  await db
+    .update(bookmark)
+    .set({ folderId: normalizedFolderId })
+    .where(and(eq(bookmark.userId, userId), inArray(bookmark.id, ownedBookmarkIds)));
+
+  return { movedCount: ownedBookmarkIds.length };
+}
+
 export async function refetchBookmarkMetadataForUser(userId: string, bookmarkId: string) {
   const normalizedBookmarkId = bookmarkId.trim();
   if (!normalizedBookmarkId) {
@@ -1769,6 +1835,92 @@ export async function listDueRssBookmarkFolderIds() {
     .map((row) => row.id);
 }
 
+export async function renameBookmarkFolderForUser(userId: string, folderId: string, name: string) {
+  const normalizedFolderId = folderId.trim();
+  const normalizedName = normalizeFolderName(name);
+  if (!normalizedFolderId) {
+    throw new Error("Folder id is required.");
+  }
+  if (!normalizedName) {
+    throw new Error("Folder name is required.");
+  }
+
+  const existing = await db
+    .select({
+      id: bookmarkFolder.id,
+      sourceType: bookmarkFolder.sourceType,
+      name: bookmarkFolder.name,
+    })
+    .from(bookmarkFolder)
+    .where(and(eq(bookmarkFolder.userId, userId), eq(bookmarkFolder.id, normalizedFolderId)))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!existing) {
+    return { status: "not-found" as const };
+  }
+
+  if (
+    existing.sourceType !== "local" &&
+    existing.sourceType !== "todo" &&
+    existing.sourceType !== "rss"
+  ) {
+    return { status: "not-editable" as const };
+  }
+  if (existing.name === "default") {
+    return { status: "protected" as const };
+  }
+
+  const duplicate = await db
+    .select({ id: bookmarkFolder.id })
+    .from(bookmarkFolder)
+    .where(
+      and(
+        eq(bookmarkFolder.userId, userId),
+        eq(bookmarkFolder.name, normalizedName),
+        eq(bookmarkFolder.sourceType, existing.sourceType),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (duplicate && duplicate.id !== existing.id) {
+    return { status: "duplicate" as const };
+  }
+
+  await db
+    .update(bookmarkFolder)
+    .set({ name: normalizedName })
+    .where(and(eq(bookmarkFolder.userId, userId), eq(bookmarkFolder.id, normalizedFolderId)));
+
+  const updated = await db
+    .select()
+    .from(bookmarkFolder)
+    .where(and(eq(bookmarkFolder.userId, userId), eq(bookmarkFolder.id, normalizedFolderId)))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!updated) {
+    return { status: "not-found" as const };
+  }
+
+  return {
+    status: "updated" as const,
+    folder: {
+      id: updated.id,
+      name: updated.name,
+      sourceType: normalizeFolderSourceType(updated.sourceType),
+      syncEnabled: updated.syncEnabled,
+      isPinned: updated.isPinned,
+      visibility: normalizeFolderVisibility(updated.visibility),
+      externalAccountId: updated.externalAccountId,
+      externalResourceId: updated.externalResourceId,
+      unseenCount: updated.unseenCount,
+      lastSyncedAt: updated.lastSyncedAt?.toISOString() ?? null,
+      syncIntervalMinutes: updated.syncIntervalMinutes,
+      rssFetchLimit: updated.rssFetchLimit,
+      rssKeepRecentCount: updated.rssKeepRecentCount,
+    } satisfies BookmarkFolderRecord,
+  };
+}
+
 export async function listActiveRssBookmarkFolderIds(limit: number = 100) {
   const normalizedLimit =
     Number.isFinite(limit) && limit > 0 ? Math.max(1, Math.min(500, Math.floor(limit))) : 100;
@@ -1900,7 +2052,13 @@ export async function processBookmarkEmbedding(
     const embeddingText = pageMetadata?.semanticText
       ? `${baseEmbeddingText}\npage_content: ${pageMetadata.semanticText}`
       : baseEmbeddingText;
-    const chunks = splitTextForEmbeddingChunks(embeddingText);
+    const adaptiveMaxChunks = Math.min(
+      80,
+      Math.max(10, Math.ceil(Math.max(embeddingText.length, 1) / 1_600)),
+    );
+    const chunks = splitTextForEmbeddingChunks(embeddingText, {
+      maxChunks: adaptiveMaxChunks,
+    });
     const chunkInputs = chunks.length > 0 ? chunks : [embeddingText.trim() || baseEmbeddingText];
     const chunkVectors = await Promise.all(chunkInputs.map((chunk) => embedText(chunk)));
     const embeddingVector = meanEmbeddingVectors(chunkVectors);
