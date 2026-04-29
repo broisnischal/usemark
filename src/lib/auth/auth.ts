@@ -39,7 +39,17 @@ export const auth = betterAuth({
     github: {
       clientId: env.GITHUB_CLIENT_ID!,
       clientSecret: env.GITHUB_CLIENT_SECRET!,
-      scope: ["user:email", "repo", "read:org"],
+      // Keep scopes minimal for auth, private email access, and repository read access.
+      // `public_repo` allows access to public repositories. If you need private repos,
+      // GitHub OAuth Apps require the broader `repo` scope.
+      scope: ["read:user", "user:email", "public_repo"],
+      // GitHub can return `email: null` on /user when the primary email is private.
+      // Better Auth requires an email, so provide a stable fallback identifier.
+      mapProfileToUser: (profile) => ({
+        email:
+          profile.email ??
+          `${profile.login ?? profile.id ?? "github-user"}@users.noreply.github.com`,
+      }),
     },
     google: {
       clientId: env.GOOGLE_CLIENT_ID!,
